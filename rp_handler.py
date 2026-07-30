@@ -4,7 +4,7 @@ from io import BytesIO
 from PIL import Image, ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
-sys.path.insert(0, "/usr/local/lib/python3.11/dist-packages")
+# sys.path handled by pip install
 import torch
 # Ensure CUDA libraries are available (RunPod mounts nvidia drivers on the host)
 # The ubuntu:22.04 base doesn't include them, but the host has them
