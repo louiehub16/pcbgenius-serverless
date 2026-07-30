@@ -34,7 +34,7 @@ jobs:
           password: ${{ secrets.GHCR_PAT }}
 
       - name: Build Docker image
-        run: docker build -t ${{ env.IMAGE_NAME }}:latest .
+        run: docker build -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest .
 
       - name: Push to ghcr.io
         run: docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
