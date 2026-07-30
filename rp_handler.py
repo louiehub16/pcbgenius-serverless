@@ -4,19 +4,26 @@ from io import BytesIO
 from PIL import Image, ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
-# sys.path handled by pip install
+sys.path.insert(0, "/usr/local/lib/python3.11/dist-packages")
+import subprocess, sys, os
+
+# Install CUDA runtime at container startup (RunPod's 50GB disk handles this)
+# NOT in the Dockerfile — avoids GitHub's 14GB disk limit during build
+def ensure_cuda():
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return
+    except: pass
+    print("Installing CUDA runtime (one-time at startup)...")
+    subprocess.run([sys.executable, "-m", "pip", "install", "--no-cache-dir",
+        "nvidia-cuda-runtime-cu12"], capture_output=True)
+    print("CUDA runtime installed.")
+
+ensure_cuda()
+
 import torch
-# Ensure CUDA libraries are available (RunPod mounts nvidia drivers on the host)
-# The ubuntu:22.04 base doesn't include them, but the host has them
-import os
-if not os.path.exists("/usr/local/cuda/lib64"):
-    # Check common mount paths
-    for p in ["/usr/local/nvidia/lib64", "/usr/lib/x86_64-linux-gnu", "/runpod_host/cuda"]:
-        if os.path.exists(p):
-            os.environ["LD_LIBRARY_PATH"] = p + ":" + os.environ.get("LD_LIBRARY_PATH", "")
-            break
-if torch.cuda.is_available():
-    torch.cuda.init()
+if torch.cuda.is_available(): torch.cuda.init()
 
 MODEL_DIR = "/models/qwen3-vl-32b-awq"
 MODEL_HF = "QuantTrio/Qwen3-VL-32B-Instruct-AWQ"
