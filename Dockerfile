@@ -1,10 +1,11 @@
-FROM ubuntu:22.04 AS builder
-ENV DEBIAN_FRONTEND=noninteractive PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1 PIP_REQUIRE_HASHES=0
+FROM nvidia/cuda:12.1.1-devel-ubuntu22.04 AS builder
+ENV DEBIAN_FRONTEND=noninteractive PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1
 RUN apt-get update && apt-get install -y --no-install-recommends python3-pip python3-dev libmagic1 curl && rm -rf /var/lib/apt/lists/*
 RUN pip3 install --no-cache-dir --upgrade pip
+# vLLM 0.15.0 has pre-built wheels on PyPI for CUDA 12.1
 RUN pip3 install --no-cache-dir vllm==0.15.0 runpod huggingface_hub pillow requests python-magic
 
-FROM ubuntu:22.04
+FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1
 ENV VLLM_LOGGING_LEVEL=ERROR HF_HUB_DISABLE_TELEMETRY=1 VLLM_NO_HW_METRICS=1
 ENV VLLM_ATTENTION_BACKEND=FLASH_ATTN VLLM_CONFIGURE_LOGGING=0
