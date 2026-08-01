@@ -4,11 +4,11 @@ from io import BytesIO
 from PIL import Image, ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
-sys.path.insert(0, "/usr/local/lib/python3.11/dist-packages")
+# Python path set by base image
 import subprocess, sys, os
 
 # Install CUDA runtime at startup (RunPod's 50GB container disk handles this)
-def ensure_cuda():
+def _skip_ensure_cuda():
     pass
 
 def secure_process_image(input_data):
