@@ -9,49 +9,7 @@ import subprocess, sys, os
 
 # Install CUDA runtime at startup (RunPod's 50GB container disk handles this)
 def ensure_cuda():
-    try:
-        import torch
-        if torch.cuda.is_available():
-            return
-    except: pass
-    print("Installing CUDA runtime at startup...")
-    subprocess.run([sys.executable, "-m", "pip", "install", "--no-cache-dir",
-        "nvidia-cuda-runtime-cu12", "nvidia-cuda-nvrtc-cu12", "nvidia-cuda-cudart-cu12"],
-        capture_output=True)
-    print("CUDA runtime ready.")
-
-ensure_cuda()
-
-import torch
-if torch.cuda.is_available(): torch.cuda.init()
-
-MODEL_DIR = "/models/qwen3-vl-32b-awq"
-MODEL_HF = "QuantTrio/Qwen3-VL-32B-Instruct-AWQ"
-
-# Download model on first boot if not cached
-if not os.path.exists(os.path.join(MODEL_DIR, "config.json")):
-    print(f"Downloading {MODEL_HF} to {MODEL_DIR}...")
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    from huggingface_hub import snapshot_download
-    snapshot_download(MODEL_HF, local_dir=MODEL_DIR, max_workers=8)
-    print("Download complete.")
-
-print("Loading Qwen3-VL-32B-AWQ on RTX 6000 Ada...")
-from vllm import LLMEngine, EngineArgs, SamplingParams
-from vllm.utils import random_uuid
-
-start = time.time()
-engine_args = EngineArgs(
-    model=MODEL_DIR, quantization="awq", dtype="float16",
-    enforce_eager=False, max_model_len=4096, max_num_seqs=4,
-    limit_mm_per_prompt={"image": 1}, gpu_memory_utilization=0.85,
-    trust_remote_code=True, kv_cache_dtype="auto"
-)
-engine = LLMEngine.from_engine_args(engine_args)
-load_t = time.time() - start
-print(f"Engine loaded in {load_t:.1f}s. Endpoint Online.")
-
-execution_lock = threading.Lock()
+    pass
 
 def secure_process_image(input_data):
     if not input_data or not isinstance(input_data, str):
