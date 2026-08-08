@@ -1,22 +1,31 @@
-# PCBGenius standalone model pipeline image (H100 training node)
-FROM nvcr.io/nvidia/pytorch:24.01-py3
+# PCBGenius training image — GH-runner-friendly
+# FIX (2026-08-08): use a tiny ubuntu base instead of nvcr.io/nvidia/pytorch
+# (huge ~tens-of-GB base). The heavy CUDA/torch/unsloth install is deferred to
+# container STARTUP (the documented pattern), so the GH-hosted runner only
+# builds a small image — no disk blow-up, no storage expansion needed.
+FROM ubuntu:22.04
 
-# Orchestration deps
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/root/.local/bin:/opt/venv/bin:$PATH"
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      bash curl git unzip ca-certificates rclone \
-    && rm -rf /var/lib/apt/lists/*
+      python3 python3-pip python3-venv bash curl git unzip ca-certificates rclone \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/venv
 
-# Python deps (training + data + hub)
-RUN pip install --no-cache-dir \
-      "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git" \
-    && pip install --no-cache-dir --no-deps xformers trl peft accelerate bitsandbytes \
-    && pip install --no-cache-dir datasets huggingface_hub wandb anthropic
-
-# Pipeline files
+# Copy pipeline
 WORKDIR /pipeline
 COPY master_pipeline.sh /pipeline/master_pipeline.sh
 COPY stages/ /pipeline/stages/
+COPY lib/ /pipeline/lib/
 RUN chmod +x /pipeline/master_pipeline.sh /pipeline/stages/*.sh
+
+# A startup bootstrap installs heavy training deps at run time (on the GPU
+# node's 50GB+ disk), not at GH build time.
+COPY bootstrap.sh /bootstrap.sh
+RUN chmod +x /bootstrap.sh
 
 # Work dir for artifacts
 RUN mkdir -p /work

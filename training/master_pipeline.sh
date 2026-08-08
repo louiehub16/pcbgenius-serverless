@@ -83,6 +83,13 @@ main() {
   require_env
   setup_rclone
 
+  # Install heavy training deps at container startup (GPU node disk), 
+  # so the image itself stays small and GH-build-friendly.
+  if [ -f /bootstrap.sh ]; then
+    log "▶ bootstrap: installing training deps..."
+    bash /bootstrap.sh || log "⚠ bootstrap reported failure (may be fine if deps present)"
+  fi
+
   run_stage 1 "Seed data pull"                 "stage1_seed.sh"        "0"
   run_stage 2 "Synthetic data generation"      "stage2_datagen.sh"     "18"
   run_stage 3 "Verified labels (KiCad/Ngspice)" "stage3_verify.sh"      "1"
