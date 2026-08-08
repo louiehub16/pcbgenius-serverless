@@ -7,7 +7,7 @@
 #
 # REQUIRED ENV (set these once at deploy time — see deploy.json):
 #   R2_ACCESS_KEY, R2_SECRET_KEY, R2_ENDPOINT, R2_BUCKET
-#   OPENROUTER_API_KEY, FIREWORKS_API_KEY, HF_TOKEN (optional), WANDB_API_KEY (optional)
+#   OPENROUTER_API_KEY, HF_TOKEN (optional), WANDB_API_KEY (optional)
 # ============================================================================
 set -euo pipefail
 
@@ -50,7 +50,7 @@ set_state() {
 
 require_env() {
   local missing=0
-  for v in R2_ACCESS_KEY R2_SECRET_KEY R2_ENDPOINT R2_BUCKET OPENROUTER_API_KEY FIREWORKS_API_KEY; do
+  for v in R2_ACCESS_KEY R2_SECRET_KEY R2_ENDPOINT R2_BUCKET OPENROUTER_API_KEY; do
     if [ -z "${!v:-}" ]; then log "❌ MISSING env: $v"; missing=1; fi
   done
   if [ "$missing" = "1" ]; then log "Set all required env vars and re-run."; exit 2; fi
