@@ -1,0 +1,24 @@
+# PCBGenius B1 — 6-layer stackup atopile template
+# Referenced by atopile_integration._stackup_import when generating a 6-layer design.
+
+stackup 6_layer_stackup:
+    6 layers
+    dielectric = 1.6mm
+    material = "FR4"
+
+    layer 1 = "F.Cu"
+    layer 2 = "In1.Cu"
+    layer 3 = "In2.Cu"
+    layer 4 = "In3.Cu"
+    layer 5 = "In4.Cu"
+    layer 6 = "B.Cu"
+
+    # dedicated signal + plane layers for dense/high-speed routing
+    layer 3 = power_plane
+    layer 4 = ground_plane
+
+    default_trace = 0.08mm
+    default_clearance = 0.08mm
+    default_via = 0.4mm
+
+    # controlled impedance not required (default margins only)

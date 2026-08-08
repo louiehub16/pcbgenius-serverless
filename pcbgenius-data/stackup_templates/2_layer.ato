@@ -1,0 +1,15 @@
+# PCBGenius B1 — 2-layer stackup atopile template
+# Referenced by atopile_integration._stackup_import when generating a 2-layer design.
+
+stackup 2_layer_stackup:
+    2 layers
+    dielectric = 1.6mm
+    material = "FR4"
+
+    layer 1 = "F.Cu"
+    layer 2 = "B.Cu"
+
+    # default clearance/trace for a cheap 2-layer board
+    default_trace = 0.15mm
+    default_clearance = 0.15mm
+    default_via = 0.6mm

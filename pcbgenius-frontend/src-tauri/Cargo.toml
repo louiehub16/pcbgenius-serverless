@@ -1,0 +1,30 @@
+[package]
+name = "pcbgenius"
+version = "0.1.0"
+description = "PCBGenius V1 desktop shell (Tauri) wrapping the React+Vite schematic canvas."
+authors = ["PCBGenius Team"]
+edition = "2021"
+rust-version = "1.77.2"
+
+# Build flags tuned for GitHub Actions windows-latest (stable Rust toolchain).
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Uses the lib + bin layout required by Tauri v2 so unit tests and the
+# generated main entry point stay decoupled.
+[lib]
+name = "pcbgenius_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]

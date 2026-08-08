@@ -1,0 +1,20 @@
+# PCBGenius B1 — 4-layer stackup atopile template
+# Referenced by atopile_integration._stackup_import when generating a 4-layer design.
+
+stackup 4_layer_stackup:
+    4 layers
+    dielectric = 1.6mm
+    material = "FR4"
+
+    layer 1 = "F.Cu"
+    layer 2 = "In1.Cu"
+    layer 3 = "In2.Cu"
+    layer 4 = "B.Cu"
+
+    # inner planes give clean power supply
+    layer 2 = power_plane
+    layer 3 = ground_plane
+
+    default_trace = 0.1mm
+    default_clearance = 0.1mm
+    default_via = 0.5mm
