@@ -85,28 +85,24 @@ def _comp(ref, ctype, value, package, pins, mpn=None):
 def _simple_power_netlist(seed):
     """A common, valid design: linear voltage regulator with in/out caps."""
     r = random.Random(seed)
-    vin, vout, capv = ["5V", "12V", "24V"][r.randrange(3)], "3.3V", "3.3V"
-    comps = []
-    comps.append(_comp("U1", "ic", "AMS1117-3.3", "SOT-223",
-                       [("VIN", "VIN"), ("GND", "GND"), ("VOUT", "VCC_3V3")], "AMS1117-3.3"))
-    comps.append(_comp("C1", "capacitor", "10uF", "0805",
-                       [("1", "VIN"), ("2", "GND")]))
-    comps.append(_comp("C2", "capacitor", "10uF", "0805",
-                       [("1", "VCC_3V3"), ("2", "GND")]))
-    comps.append(_comp("C3", "capacitor", "100nF", "0603",
-                       [("1", "VCC_3V3"), ("2", "GND")]))
+    vin, vout = ["5V", "12V", "24V"][r.randrange(3)], "3.3V"
+    comps = [
+        _comp("U1", "ic", "AMS1117-3.3", "SOT-223",
+              [("VIN", "VIN"), ("GND", "GND"), ("VOUT", "VCC_3V3")], "AMS1117-3.3"),
+        _comp("C1", "capacitor", "10uF", "0805", [("1", "VIN"), ("2", "GND")]),
+        _comp("C2", "capacitor", "10uF", "0805", [("1", "VCC_3V3"), ("2", "GND")]),
+        _comp("C3", "capacitor", "100nF", "0603", [("1", "VCC_3V3"), ("2", "GND")]),
+    ]
     nets = [
         _net("VIN", "power", ["U1.VIN", "C1.1"]),
         _net("GND", "ground", ["U1.GND", "C1.2", "C2.2", "C3.2"]),
         _net("VCC_3V3", "power", ["U1.VOUT", "C2.1", "C3.1"]),
     ]
-    nl = {
-        "schema_version": CONTRACT_VERSION,
-        "metadata": {"design_name": f"ldo_{vin}_to_{vout}", "board_layers": 2,
-                     "description": f"Linear regulator {vin}->{vout}", "created_by": CREATED_BY,
-                     "target_fab": None},
-        "components": comps, "nets": nets,
-    }
+    nl = {"schema_version": CONTRACT_VERSION,
+          "metadata": {"design_name": f"ldo_{vin}_to_{vout}", "board_layers": 2,
+                       "description": f"Linear regulator {vin}->{vout}", "created_by": CREATED_BY,
+                       "target_fab": None},
+          "components": comps, "nets": nets}
     prompt = f"Design a simple {vin} to {vout} linear voltage regulator using an AMS1117. Include input, output, and bypass capacitors."
     return prompt, nl, "netlist_design"
 
@@ -134,7 +130,63 @@ def _led_blinker_netlist(seed):
     return prompt, nl, "netlist_design"
 
 
-_TEMPLATES = [_simple_power_netlist, _led_blinker_netlist]
+def _buck_converter(seed):
+    """12V->5V buck (LM2596). The design that passed the inference gate."""
+    r = random.Random(seed)
+    vin = r.choice(["9V", "12V", "24V"])
+    vout = r.choice(["3.3V", "5V"])
+    comps = [
+        _comp("U1", "ic", "LM2596S-ADJ", "TO-263", [("VIN","VIN"),("GND","GND"),("OUT","SW"),("FB","FB")], "LM2596S-ADJ"),
+        _comp("D1", "diode", "SS34", "SMA", [("A","SW"),("K","VOUT")], "SS34"),
+        _comp("L1", "inductor", "33uH", "CDRH8D28", [("1","SW"),("2","VOUT")]),
+        _comp("C1", "capacitor", "100uF", "10x10mm", [("1","VIN"),("2","GND")]),
+        _comp("C2", "capacitor", "220uF", "10x10mm", [("1","VOUT"),("2","GND")]),
+        _comp("R1", "resistor", "1k", "0805", [("1","VOUT"),("2","FB")]),
+        _comp("R2", "resistor", "3.3k", "0805", [("1","FB"),("2","GND")]),
+    ]
+    nets = [
+        _net("VIN","power",["U1.VIN","C1.1"]),
+        _net("GND","ground",["U1.GND","D1.K","C1.2","C2.2","R2.2"]),
+        _net("SW","power",["U1.OUT","D1.A","L1.1"]),
+        _net("VOUT","power",["D1.K","L1.2","C2.1","R1.1"]),
+        _net("FB","analog",["U1.FB","R1.2","R2.1"]),
+    ]
+    nl = {"schema_version": CONTRACT_VERSION,
+          "metadata": {"design_name": f"buck_{vin}_to_{vout}", "board_layers": 2,
+                       "description": f"Buck converter {vin}->{vout} with LM2596", "created_by": CREATED_BY,
+                       "target_fab": "jlcpcb"},
+          "components": comps, "nets": nets}
+    prompt = f"Design a {vin} to {vout} buck switching converter using an LM2596S with a Schottky diode and output inductor."
+    return prompt, nl, "netlist_design"
+
+
+def _usb_power_netlist(seed):
+    """USB 5V power input with ESD + filter caps."""
+    r = random.Random(seed)
+    comps = [
+        _comp("J1", "connector", "USB-C", "USB-C-31", [("VBUS","VBUS"),("GND","GND"),("CC1","CC1"),("CC2","CC2")], "USB-C"),
+        _comp("F1", "resistor", "0ohm", "0805", [("1","VBUS"),("2","VBUS_F")], ""),
+        _comp("C1", "capacitor", "10uF", "0805", [("1","VBUS_F"),("2","GND")]),
+        _comp("C2", "capacitor", "100nF", "0603", [("1","VBUS_F"),("2","GND")]),
+        _comp("D1", "diode", "ESD", "SOT-23", [("1","VBUS_F"),("2","GND")], "USBLC6-2SC6"),
+    ]
+    nets = [
+        _net("VBUS","power",["J1.VBUS","F1.1"]),
+        _net("GND","ground",["J1.GND","C1.2","C2.2","D1.2"]),
+        _net("VBUS_F","power",["F1.2","C1.1","C2.1","D1.1"]),
+        _net("CC1","analog",["J1.CC1"]),
+        _net("CC2","analog",["J1.CC2"]),
+    ]
+    nl = {"schema_version": CONTRACT_VERSION,
+          "metadata": {"design_name": "usb_power", "board_layers": 2,
+                       "description": "USB-C 5V power input with ESD protection and filtering", "created_by": CREATED_BY,
+                       "target_fab": None},
+          "components": comps, "nets": nets}
+    prompt = "Design a USB-C power input that provides a clean 5V with ESD protection and input filtering."
+    return prompt, nl, "netlist_design"
+
+
+_TEMPLATES = [_simple_power_netlist, _led_blinker_netlist, _buck_converter, _usb_power_netlist]
 
 
 def generate_deterministic(n, out_path):
