@@ -38,7 +38,14 @@ R2 = {
 
 def http(method, url, body=None, headers=None, timeout=30):
     data = json.dumps(body).encode() if body is not None else None
-    hdr = {"Content-Type": "application/json", "Accept": "application/json"}
+    # Browser UA is REQUIRED — Cloudflare's kanban worker returns 403/1010
+    # for non-browser agents (Python-urllib). Same WAF fix as the Salad API.
+    hdr = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"),
+    }
     if headers:
         hdr.update(headers)
     req = urllib.request.Request(url, data=data, method=method, headers=hdr)
@@ -51,16 +58,9 @@ def http(method, url, body=None, headers=None, timeout=30):
         return None, str(e)
 
 
-def post_kanban(status, feature, message, phase=None, agent=AGENT_NAME):
-    body = {"agent": agent, "status": status, "feature": feature, "message": message}
-    if phase:
-        body["phase"] = phase
-    return http("POST", KANBAN_URL, body)
-
-
 def call_kimi(prompt, max_tokens=400):
     if not OPENROUTER_KEY:
-        return None
+        return None, "no OPENROUTER_API_KEY"
     body = {
         "model": KIMI_MODEL,
         "messages": [
@@ -75,11 +75,19 @@ def call_kimi(prompt, max_tokens=400):
     s, out = http("POST", "https://openrouter.ai/api/v1/chat/completions", body,
                   headers={"Authorization": f"Bearer {OPENROUTER_KEY}"}, timeout=60)
     if s != 200:
-        return None
+        return None, f"kimi http {s}: {str(out)[:120]}"
     try:
-        return json.loads(out)["choices"][0]["message"]["content"]
-    except Exception:
-        return None
+        return json.loads(out)["choices"][0]["message"]["content"], None
+    except Exception as e:
+        return None, f"kimi parse: {e}"
+
+
+def post_kanban(status, feature, message, phase=None, agent=AGENT_NAME):
+    body = {"agent": agent, "status": status, "feature": feature, "message": message}
+    if phase:
+        body["phase"] = phase
+    s, out = http("POST", KANBAN_URL, body)
+    return (s, out)
 
 
 def read_state():
@@ -128,10 +136,11 @@ def main():
                 f"{os.environ.get('COST_CAP_USD','90')} USD. No user present. "
                 "What next? Short JSON."
             )
-            verdict = call_kimi(prompt)
+            verdict, kimi_err = call_kimi(prompt)
             crit = False
             note = "heartbeat ok"
             phase = None
+            kanban_s = None
             if verdict:
                 try:
                     v = json.loads(verdict)
@@ -140,21 +149,27 @@ def main():
                     phase = v.get("phase")
                 except Exception:
                     note = verdict[:120]
-                post_kanban("critical" if crit else "ok", "supervisor-tick", note, phase=phase)
+                kanban_s, _ = post_kanban("critical" if crit else "ok", "supervisor-tick", note, phase=phase)
             else:
-                post_kanban("warning", "supervisor-tick",
+                kanban_s, _ = post_kanban("warning", "supervisor-tick",
                             "Kimi call unavailable (check OPENROUTER_API_KEY).")
+                if kimi_err:
+                    note = kimi_err
 
             write_r2_heartbeat({
                 "ts": tick.isoformat(), "agent": AGENT_NAME, "stage": stage,
-                "status": "critical" if crit else "ok", "note": note,
+                "status": "critical" if crit else "ok",
+                "note": note, "kanban_http": kanban_s,
             })
         except Exception as e:
             print(f"[supervisor] loop error: {e}", flush=True)
             try:
-                post_kanban("warning", "supervisor-error", f"loop error: {e}")
-            except Exception:
-                pass
+                kanban_s, _ = post_kanban("warning", "supervisor-error", f"loop error: {e}")
+                write_r2_heartbeat({"ts": tick.isoformat(), "agent": AGENT_NAME,
+                                    "status": "error", "note": f"loop error: {e}",
+                                    "kanban_http": kanban_s})
+            except Exception as e2:
+                print(f"[supervisor] error-logging failed: {e2}", flush=True)
         print(f"[{tick.isoformat()}] tick done", flush=True)
         time.sleep(INTERVAL)
 
