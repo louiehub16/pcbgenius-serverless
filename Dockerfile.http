@@ -1,0 +1,19 @@
+# PCBGenius — HTTP-serving Qwen3-VL image for direct pod testing
+# Uses vLLM's OpenAI-compatible server on port 8000 (bypasses serverless queue)
+FROM runpod/worker-v1-vllm:stable-cuda12.1.0
+
+# vllm serve launches the OpenAI-compatible HTTP server
+ENV HF_MODEL_NAME=QuantTrio/Qwen3-VL-32B-Instruct-AWQ
+ENV DTYPE=float16
+ENV QUANTIZATION=awq
+ENV MAX_MODEL_LEN=4096
+ENV PORT=8000
+
+# Launch vLLM OpenAI-compatible server on port 8000
+CMD ["vllm", "serve", "QuantTrio/Qwen3-VL-32B-Instruct-AWQ", \
+     "--port", "8000", \
+     "--host", "0.0.0.0", \
+     "--dtype", "float16", \
+     "--quantization", "awq", \
+     "--max-model-len", "4096", \
+     "--trust-remote-code"]
