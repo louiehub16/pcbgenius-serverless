@@ -10,6 +10,9 @@ import { ok } from "../helpers";
  * STUB: lists expected Gerber filenames; real KiCad CLI export lands in a later wave.
  * NOTE: contract Section 3 marks export_gerber as approval_required — the client should
  * call request_approval first (handled at the app layer, not enforced here).
+ *
+ * [D1-safety call site] Never export manufacturing files for a refused/unsafe
+ * design — wire `await runSafetyGate(netlist)` and refuse when pass:false.
  */
 export const exportGerberRoute = new Hono();
 

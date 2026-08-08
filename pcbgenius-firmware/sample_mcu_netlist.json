@@ -1,0 +1,54 @@
+{
+  "schema_version": "1.0.0",
+  "metadata": {
+    "design_name": "led_blinker",
+    "description": "ATtiny85 blinks an LED",
+    "board_layers": 2,
+    "created_by": "pcbgenius",
+    "target_fab": null
+  },
+  "components": [
+    {
+      "ref": "U1", "type": "ic", "value": "ATtiny85", "package": "DIP-8",
+      "mpn": "ATTINY85-20PU",
+      "pins": [
+        {"number": "1", "name": "VCC", "net": "VCC"},
+        {"number": "2", "name": "GND", "net": "GND"},
+        {"number": "3", "name": "PB0", "net": "NET_LED"}
+      ],
+      "properties": {}
+    },
+    {
+      "ref": "R1", "type": "resistor", "value": "330", "package": "0805",
+      "mpn": null,
+      "pins": [
+        {"number": "1", "name": "1", "net": "NET_LED"},
+        {"number": "2", "name": "2", "net": "VCC"}
+      ],
+      "properties": {}
+    },
+    {
+      "ref": "LED1", "type": "led", "value": "red", "package": "0805",
+      "mpn": null,
+      "pins": [
+        {"number": "1", "name": "A", "net": "NET_LED"},
+        {"number": "2", "name": "K", "net": "GND"}
+      ],
+      "properties": {}
+    },
+    {
+      "ref": "C1", "type": "capacitor", "value": "100nF", "package": "0603",
+      "mpn": null,
+      "pins": [
+        {"number": "1", "name": "1", "net": "VCC"},
+        {"number": "2", "name": "2", "net": "GND"}
+      ],
+      "properties": {}
+    }
+  ],
+  "nets": [
+    {"name": "VCC", "pins": ["U1.VCC", "R1.2", "C1.1"], "class": "power"},
+    {"name": "GND", "pins": ["U1.GND", "LED1.K", "C1.2"], "class": "ground"},
+    {"name": "NET_LED", "pins": ["U1.PB0", "R1.1", "LED1.A"], "class": "signal"}
+  ]
+}
