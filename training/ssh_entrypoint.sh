@@ -1,21 +1,50 @@
 #!/bin/bash
-# Entrypoint: start SSH (diagnostics) if a PUBLIC_KEY is provided, then run
-# bootstrap (heavy deps + startup log to R2) and the master pipeline. Never exits.
+# Entrypoint: start a /healthz HTTP server IMMEDIATELY so Salad's startup probe
+# passes while the heavy torch+unsloth bootstrap installs (which takes ~10min).
+# Then run SSH (diagnostics, optional), bootstrap (deps + master pipeline).
+# Never exits — keeps the health endpoint alive for the container's lifetime.
 set -u
 
-# Optional SSH for exec-in diagnostics (no key = skip, still runs training)
+# 1) Tiny health server on :8000 — responds before the slow install begins.
+#    Salad's probe hits /healthz; we answer "ok:false" while loading, "ok:true"
+#    once bootstrap + pipeline finish. Server stays up so liveness passes.
+cat > /tmp/health.py <<'PY'
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import os
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        ready = "ok" if self.path in ("/healthz", "/") else "404"
+        if ready == "404":
+            self.send_response(404); self.end_headers(); return
+        status = "ok" if os.path.exists("/opt/.pipeline_done") else "loading"
+        body = ('{"status":"%s","service":"pcbgenius-training"}' % status).encode()
+        self.send_response(200)
+        self.send_header("Content-Type","application/json")
+        self.send_header("Content-Length",str(len(body)))
+        self.end_headers(); self.wfile.write(body)
+    def log_message(self, *a): pass
+HTTPServer(("0.0.0.0", 8000), H).serve_forever()
+PY
+echo "[entrypoint] starting /healthz server..."
+nohup python /tmp/health.py >/dev/null 2>&1 &
+HEALTH_PID=$!
+echo "[entrypoint] health server pid=$HEALTH_PID"
+
+# 2) Optional SSH diagnostics
 if [ -n "${PUBLIC_KEY:-}" ]; then
   echo "${PUBLIC_KEY}" > /root/.ssh/authorized_keys
   chmod 600 /root/.ssh/authorized_keys
   ssh-keygen -A >/dev/null 2>&1 || true
   /usr/sbin/sshd >/dev/null 2>&1 || true
-  echo "[entrypoint] SSH enabled for diagnostics"
+  echo "[entrypoint] SSH enabled"
 fi
 
-echo "[entrypoint] running bootstrap (deps + R2 startup log), then master pipeline..."
-bash /bootstrap.sh || { echo "[entrypoint] bootstrap failed"; exit 1; }
-echo "[entrypoint] bootstrap done — master pipeline will have run (master runs stages itself)"
-# bootstrap.sh already invokes master_pipeline.sh at its end; keep this process alive
-# long enough for SSH diagnostics / artifact upload, then the pod/container lifecycle
-# handles termination. Loop to keep SSH reachable.
+# 3) Bootstrap: heavy deps + master pipeline. This prints the real stderr to the
+#    R2 startup log (bootstrap.sh ships logs/training_*.log) so we can debug.
+echo "[entrypoint] running bootstrap (heavy deps + master pipeline)..."
+bash /bootstrap.sh || { echo "[entrypoint] bootstrap failed"; }
+touch /opt/.pipeline_done
+echo "[entrypoint] pipeline signaled done (health will now report ok:true)"
+
+# 4) Keep alive forever so the container never exits mid-SSH/diagnostic.
 while true; do sleep 3600; done
