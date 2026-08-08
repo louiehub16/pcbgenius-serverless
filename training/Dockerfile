@@ -11,9 +11,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH="/root/.local/bin:/opt/venv/bin:$PATH"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3 python3-pip python3-venv bash curl git unzip ca-certificates rclone \
+      python3 python3-pip python3-venv bash curl git unzip ca-certificates rclone openssh-server \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -m venv /opt/venv
+
+# SSH debug (accept PUBLIC_KEY from env; diagnostics only)
+RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh
+COPY ssh_entrypoint.sh /ssh_entrypoint.sh
+RUN chmod +x /ssh_entrypoint.sh
 
 # Copy pipeline
 WORKDIR /pipeline
@@ -30,4 +35,4 @@ RUN chmod +x /bootstrap.sh
 # Work dir for artifacts
 RUN mkdir -p /work
 
-ENTRYPOINT ["/bin/bash", "/pipeline/master_pipeline.sh"]
+ENTRYPOINT ["/bin/bash", "/ssh_entrypoint.sh"]
