@@ -24,7 +24,7 @@ jobs:
       - name: Build and push training image
         uses: docker/build-push-action@v6
         with:
-          context: ${{ github.workspace }}
+          context: ${{ github.workspace }}/training
           file: ${{ github.workspace }}/training/Dockerfile
           push: true
           tags: |
