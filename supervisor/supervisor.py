@@ -141,9 +141,24 @@ def post_kanban(status, feature, message, phase=None, agent=AGENT_NAME):
 
 
 def read_state():
+    """Read pipeline stage from R2 state/pipeline_state.txt (the durable,
+    ground-truth marker the pipeline writes). Falls back to a local file,
+    then 'unknown'."""
     try:
         with open(STATE_FILE) as f:
-            return f.read().strip() or "unknown"
+            local = f.read().strip()
+            if local and local != "unknown":
+                return local
+    except Exception:
+        pass
+    if not (R2["key"] and R2["secret"] and R2["endpoint"]):
+        return "unknown"
+    try:
+        import boto3
+        s3 = boto3.client("s3", endpoint_url=R2["endpoint"],
+            aws_access_key_id=R2["key"], aws_secret_access_key=R2["secret"])
+        o = s3.get_object(Bucket=R2["bucket"], Key="state/pipeline_state.txt")
+        return o["Body"].read().decode().strip() or "unknown"
     except Exception:
         return "unknown"
 
