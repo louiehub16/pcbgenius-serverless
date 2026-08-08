@@ -1,0 +1,327 @@
+/* PCBGenius schematic canvas — dark + light theme via `.theme-*` class on root. */
+
+:root {
+  --bg: #0f172a;
+  --panel: #1e293b;
+  --panel-border: #334155;
+  --fg: #e2e8f0;
+  --muted: #94a3b8;
+  --accent: #3b82f6;
+  --node-bg: #1e293b;
+  --node-border: #475569;
+  --ok: #22c55e;
+  --warn: #eab308;
+  --error: #ef4444;
+  --grid-dot: #475569;
+}
+
+.theme-light {
+  --bg: #f1f5f9;
+  --panel: #ffffff;
+  --panel-border: #cbd5e1;
+  --fg: #0f172a;
+  --muted: #64748b;
+  --node-bg: #ffffff;
+  --node-border: #94a3b8;
+  --grid-dot: #cbd5e1;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* ── Toolbar ──────────────────────────────────────────────────────────── */
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.brand {
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.logo {
+  font-size: 18px;
+}
+
+.contract-tag {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.tools {
+  display: flex;
+  gap: 8px;
+}
+
+.tools button,
+.btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: filter 0.15s;
+}
+.tools button:hover,
+.btn:hover {
+  filter: brightness(1.08);
+}
+.theme-btn {
+  background: var(--node-border) !important;
+}
+
+/* ── Layout ───────────────────────────────────────────────────────────── */
+.layout {
+  display: grid;
+  grid-template-columns: 1fr 300px 300px;
+  gap: 0;
+  flex: 1;
+  min-height: 0;
+}
+
+.canvas-wrap {
+  background: var(--bg);
+  min-width: 0;
+}
+
+/* ── Panes ────────────────────────────────────────────────────────────── */
+.pane {
+  background: var(--panel);
+  border-left: 1px solid var(--panel-border);
+  padding: 14px;
+  overflow-y: auto;
+  font-size: 13px;
+}
+
+.pane h2 {
+  font-size: 14px;
+  margin: 0 0 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.detail h3 {
+  margin: 0 0 6px;
+}
+
+.detail h4 {
+  margin: 12px 0 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.detail dl {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  margin: 0;
+}
+.detail dt {
+  color: var(--muted);
+}
+.detail dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+.pin-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.pin-list li {
+  padding: 2px 0;
+  border-bottom: 1px solid var(--panel-border);
+}
+.pin-list em {
+  color: var(--accent);
+  font-style: normal;
+}
+
+.validation-summary {
+  margin-top: 14px;
+  padding: 8px;
+  border-radius: 6px;
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid var(--ok);
+  color: var(--ok);
+}
+.validation-summary.has-errors {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: var(--error);
+  color: var(--error);
+}
+
+/* Violations */
+.violation-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.violation {
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  border-radius: 6px;
+  border-left: 3px solid var(--muted);
+  background: rgba(148, 163, 184, 0.08);
+}
+.violation.error {
+  border-left-color: var(--error);
+}
+.violation.warning {
+  border-left-color: var(--warn);
+}
+.violation.info {
+  border-left-color: var(--ok);
+}
+.violation-rule {
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: #fff;
+  border-radius: 4px;
+  padding: 1px 5px;
+  background: var(--muted);
+}
+.violation.error .badge {
+  background: var(--error);
+}
+.violation.warning .badge {
+  background: var(--warn);
+}
+.violation.info .badge {
+  background: var(--ok);
+}
+.violation-source {
+  font-size: 11px;
+  color: var(--muted);
+}
+.violation-msg {
+  margin-top: 2px;
+}
+
+/* ── Custom nodes ─────────────────────────────────────────────────────── */
+.node {
+  background: var(--node-bg);
+  border: 1px solid var(--node-border);
+  border-radius: 8px;
+  padding: 8px;
+  min-width: 140px;
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.node.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+}
+
+.component-node .node-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.node-ref {
+  font-weight: 700;
+}
+.node-type {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+.node-value {
+  margin-top: 2px;
+  font-weight: 600;
+}
+.node-sub {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pin-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  margin-top: 4px;
+}
+.pin-net {
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 70px;
+}
+.pin-name {
+  color: var(--muted);
+}
+
+/* Net node */
+.net-node {
+  text-align: center;
+  border-color: var(--node-border);
+}
+.net-name {
+  font-weight: 700;
+}
+.net-class {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.net-count {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* React Flow theme overrides */
+.react-flow__handle.pin-handle {
+  width: 8px;
+  height: 8px;
+  background: var(--accent);
+  border: 1px solid var(--bg);
+}

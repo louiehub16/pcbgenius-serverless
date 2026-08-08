@@ -1,0 +1,22 @@
+# PCBGenius backend gateway — Cloudflare Workers config.
+# MATCHES FROZEN INTERFACE CONTRACT v1.0.0 (2026-07-24). Do NOT change route names
+# without retraining the model (+$32-53).
+name = "pcbgenius-backend"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# Workers binding — no D1/KV/R2 needed for Wave-A stubs.
+# [(kv_namespaces)] and [d1_databases] to be added in later waves when the
+# component DB (RAG) and datasheet store move from stubs to real integrations.
+
+[vars]
+# CORS origin for the V1 frontend dev server.
+CORS_ORIGIN = "http://localhost:5173"
+# In-memory rate limit: max requests per window per client IP.
+RATE_LIMIT_MAX = 120
+RATE_LIMIT_WINDOW_MS = 60000
+
+# Preview / production routes.
+[env.production]
+routes = [{ pattern = "backend.pcbgenius.dev", custom_domain = true }]
