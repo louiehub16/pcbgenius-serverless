@@ -1,16 +1,10 @@
-name: Build and Push Serverless Image
+name: Build HTTP Image
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
-env:
-  REGISTRY: docker.io
-  IMAGE_NAME: hrm3478938/pcbgenius-serverless
-
 jobs:
-  build:
+  build-http:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -35,7 +29,7 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build and Push Serverless Image
+      - name: Build and Push HTTP Image
         run: |
-          docker build --pull -t ${{ env.IMAGE_NAME }}:latest .
-          docker push ${{ env.IMAGE_NAME }}:latest
+          docker build -f Dockerfile.http -t hrm3478938/pcbgenius-http:latest .
+          docker push hrm3478938/pcbgenius-http:latest
