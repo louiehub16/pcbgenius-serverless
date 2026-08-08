@@ -58,28 +58,78 @@ def http(method, url, body=None, headers=None, timeout=30):
         return None, str(e)
 
 
-def call_kimi(prompt, max_tokens=400):
+def call_kimi(prompt, max_tokens=600):
     if not OPENROUTER_KEY:
         return None, "no OPENROUTER_API_KEY"
     body = {
         "model": KIMI_MODEL,
         "messages": [
             {"role": "system", "content": (
-                "You are the PCBGenius project supervisor. Give terse, actionable "
-                "verdicts as strict JSON with keys: phase, next_action, critical, note.")},
+                "You are the PCBGenius project supervisor. Reply with ONLY a "
+                "single JSON object: {\"phase\": <str>, \"next_action\": <str>, "
+                "\"critical\": <bool>, \"note\": <str>}. No markdown, no reasoning, "
+                "no extra prose.")},
             {"role": "user", "content": prompt},
         ],
-        "max_tokens": max_tokens,
-        "temperature": 0.2,
+        "max_tokens": max_tokens,   # Kimi K3 is a reasoning model — too-small budget
+        "temperature": 0.2,          # exhausts on reasoning and returns empty content.
     }
     s, out = http("POST", "https://openrouter.ai/api/v1/chat/completions", body,
-                  headers={"Authorization": f"Bearer {OPENROUTER_KEY}"}, timeout=60)
+                  headers={"Authorization": f"Bearer {OPENROUTER_KEY}"}, timeout=90)
     if s != 200:
-        return None, f"kimi http {s}: {str(out)[:120]}"
+        return None, f"kimi http {s}: {str(out)[:150]}"
     try:
-        return json.loads(out)["choices"][0]["message"]["content"], None
+        d = json.loads(out)
+        msg = d["choices"][0]["message"]
+        content = msg.get("content")
+        if not content:  # reasoning model may put text in 'reasoning'
+            content = msg.get("reasoning")
+        if not content:
+            return None, "kimi empty response"
+        # Kimi K3 often wraps the JSON in prose/reasoning despite the instruction —
+        # extract the FIRST balanced JSON object from anywhere in the text.
+        obj = extract_first_json_object(content)
+        if obj is None:
+            return content, "no JSON object found in response"
+        return json.dumps(obj), None
     except Exception as e:
         return None, f"kimi parse: {e}"
+
+
+def extract_first_json_object(text):
+    """Return the first balanced {...} JSON object found in text, or None.
+    Handles Kimi wrapping JSON in prose by scanning for a '{' and matching
+    its balanced brace depth (ignoring braces inside quoted strings)."""
+    start = -1
+    depth = 0
+    in_str = False
+    esc = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if start < 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                candidate = text[start : i + 1]
+                try:
+                    return json.loads(candidate)
+                except Exception:
+                    # not valid JSON — keep searching forward
+                    start = -1
+                    depth = 0
+    return None
 
 
 def post_kanban(status, feature, message, phase=None, agent=AGENT_NAME):
