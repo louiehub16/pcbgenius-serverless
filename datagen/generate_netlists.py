@@ -190,21 +190,64 @@ _TEMPLATES = [_simple_power_netlist, _led_blinker_netlist, _buck_converter, _usb
 
 
 def generate_deterministic(n, out_path):
-    """Generate n contract-valid netlists deterministically (no model)."""
+    """Generate n contract-valid netlists deterministically (no model).
+    Each seed yields a DISTINCT design by applying a per-seed value-variation
+    pass, so the dataset has real diversity (not 11 byte-identical rows)."""
     ok = 0
+    seen = set()
     with open(out_path, "w") as f:
         for i in range(n):
             fn = _TEMPLATES[i % len(_TEMPLATES)]
             prompt, nl, skill = fn(i)
+            nl = _vary_design(nl, i)          # per-seed real variation
+            prompt = _vary_prompt(prompt, nl)
+            row = json.dumps({"prompt": prompt, "netlist": nl, "skill": skill})
             val, errs = validate_netlist(nl)
-            if not val:
-                print(f"[gen] design {i} INVALID: {errs}", file=sys.stderr)
+            if not val or row in seen:
                 continue
-            f.write(json.dumps({"prompt": prompt, "netlist": nl, "skill": skill})
-                    + "\n")
+            seen.add(row)
+            f.write(row + "\n")
             ok += 1
-    print(f"[gen] deterministic: wrote {ok}/{n} valid netlists to {out_path}")
+    print(f"[gen] deterministic: wrote {ok}/{n} unique valid netlists to {out_path}")
     return ok
+
+
+def _vary_design(nl, seed):
+    """Perturb component values/packages/nets per seed so designs differ but
+    remain contract-valid. Deterministic (same seed -> same design)."""
+    r = random.Random(seed)
+    nl = json.loads(json.dumps(nl))  # deep copy
+    for c in nl.get("components", []):
+        # vary resistor/cap values within a sane family
+        t = c.get("type")
+        if t == "resistor":
+            c["value"] = r.choice(["100", "330", "1k", "4.7k", "10k", "100k"])
+        elif t == "capacitor":
+            c["value"] = r.choice(["100nF", "1uF", "4.7uF", "10uF", "22uF", "100uF"])
+        elif t == "inductor":
+            c["value"] = r.choice(["22uH", "33uH", "47uH", "100uH"])
+    # rename the signal net with a per-seed suffix to break dedupe
+    for n in nl.get("nets", []):
+        if n.get("class") == "signal":
+            base = "NET_" + "ABCDEFGH"[seed % 8] + str(seed % 97)
+            old = n["name"]
+            n["name"] = base
+            # remap pins referencing this net
+            for c in nl.get("components", []):
+                for p in c.get("pins", []):
+                    if p.get("net") == old:
+                        p["net"] = base
+            # rebuild net.pins as ref.pin for pins now on this net
+            n["pins"] = [f"{c['ref']}.{p['name']}"
+                         for c in nl.get("components", [])
+                         for p in c.get("pins", [])
+                         if p.get("net") == base]
+    return nl
+
+
+def _vary_prompt(prompt, nl):
+    vals = ", ".join(f"{c['ref']}={c['value']}" for c in nl.get("components", [])[:4])
+    return prompt + f" (variation: {vals})"
 
 
 # ---- Model-assisted generation (OpenRouter) ----------------------------
