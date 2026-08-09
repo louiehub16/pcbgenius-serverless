@@ -128,9 +128,11 @@ touch "$HEARTBEAT"   # start the clock now (bootstrap is progress)
       touch "$HEARTBEAT"
       continue
     fi
-    # no checkpoints; fall back to container-local CPU activity
-    if ls /work >/dev/null 2>&1 && [ -n "$(ls -A /work 2>/dev/null)" ]; then
-      # pipeline is churning files -> progress
+    # no R2 checkpoints; use a RECENCY test on /work, NOT mere non-emptiness.
+    # (Auto-resume under section 5.0 guarantees /work is non-empty from the first
+    # poll, so `ls -A /work` would touch the heartbeat forever and the stuck-abort
+    # could never fire -> unbounded billing. Kimi re-review 2026-08-09.)
+    if [ -d /work ] && find /work -type f -mmin -10 2>/dev/null | head -1 | grep -q .; then
       touch "$HEARTBEAT"; continue
     fi
     # any elapsed > timeout with no progress -> stuck
