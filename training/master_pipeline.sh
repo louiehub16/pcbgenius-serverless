@@ -45,7 +45,9 @@ log() { echo "[$(date +%H:%M:%S)] $*"; }
 # validate + default in the shell instead of relying on pipeline rc.
 get_state() {
   local s
-  s=$(python /pipeline/lib/r2.py get "${STATE_KEY}" 2>/dev/null | tr -d '[:space:]')
+  # Guard the assignment itself: under `set -euo pipefail`, a non-zero python rc
+  # (e.g. missing state key on a fresh deploy) would abort before the regex guard.
+  s="$(python /pipeline/lib/r2.py get "${STATE_KEY}" 2>/dev/null | tr -d '[:space:]')" || s=""
   if [[ "${s:-}" =~ ^[0-9]+$ ]]; then echo "$s"; else echo "0"; fi
 }
 set_state() {
