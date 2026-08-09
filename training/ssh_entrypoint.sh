@@ -159,11 +159,17 @@ WATCHDOG_PID=$!
 # 5.0) RESILIENT AUTO-RESUME: pull prior artifacts/data so an interrupted run
 #      resumes from its last checkpointed state instead of starting fresh.
 if [ -n "${R2_BUCKET:-}" ]; then
-  echo "[entrypoint] auto-resume: syncing prior artifacts/data/state from R2..."
+  echo "[entrypoint] auto-resume: syncing prior artifacts/data+processed/state from R2..."
   python /pipeline/lib/r2.py ls "artifacts/data/" 2>/dev/null | head -20 || true
   # pull data dir (rclone read works even though write was AccessDenied)
   command -v rclone >/dev/null 2>&1 && mkdir -p /work && \
     rclone copy "r2:${R2_BUCKET}/artifacts/data" /work/data --exclude "*.DS_Store" 2>/dev/null || true
+  # FIX (live-stream diagnostic 2026-08-09): stage 3 expects data/processed/verified_dataset.jsonl.
+  # That file lives under artifacts/processed on R2, NOT artifacts/data — so a fresh node
+  # crashed at stage 3 with FileNotFoundError. Pull processed/ too so stages 3/5/6 have their input.
+  command -v rclone >/dev/null 2>&1 && mkdir -p /work/data/processed && \
+    rclone copy "r2:${R2_BUCKET}/artifacts/processed" /work/data/processed --exclude "*.DS_Store" 2>/dev/null || true
+  ls -la /work/data/processed 2>/dev/null | head -10 || true
   python /pipeline/lib/r2.py get "state/pipeline_state.txt" 2>/dev/null > /work/pipeline_state_r2.txt && \
     echo "[entrypoint] last stage on R2: $(cat /work/pipeline_state_r2.txt)" || \
     echo "[entrypoint] no prior pipeline state — fresh run"
