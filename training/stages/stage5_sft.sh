@@ -37,7 +37,8 @@ def main():
     )
 
     # Prefer the verified dataset if stage3 produced it, else the raw training set.
-    import os.path
+    # (NOTE: do NOT `import os.path` here — it makes `os` a function-local var and
+    #  breaks the earlier `os.environ` reads with UnboundLocalError. os is module-level.)
     src = "data/processed/verified_dataset.jsonl"
     if not os.path.exists(src):
         src = "data/processed/pcbgenius_training_dataset.jsonl"
@@ -48,7 +49,7 @@ def main():
         per_device_train_batch_size=1,          # low-VRAM: bs=1
         gradient_accumulation_steps=int(os.environ.get("GRAD_ACC", "16")),
         warmup_steps=25, max_steps=int(os.environ.get("MAX_STEPS", "600")),
-        learning_rate=2e-4, bf16=False, fp16=True,
+        learning_rate=2e-4, bf16=True, fp16=False,
         logging_steps=10, optim="adamw_8bit", weight_decay=0.01,
         lr_scheduler_type="cosine", save_steps=100, save_total_limit=3,
         use_liger_kernel=True, group_by_length=True,
@@ -72,7 +73,15 @@ def main():
     train_loop.register_eviction_handler(_emergency_save)
 
     print("[stage5] training (resume if checkpoint exists)...")
-    resume = os.path.isdir("./checkpoints") and len(os.listdir("./checkpoints"))>0
+    # Only resume if a REAL trainer checkpoint dir (checkpoint-*) exists. Checking
+    # mere dir-non-empty is wrong: the emergency-save path leaves resume_state.pt /
+    # evict_stepN (which are NOT resumable) -> resume_from_checkpoint=True would raise
+    # ValueError "Can't find a valid checkpoint" (Kimi round-9). Use glob for checkpoint-*.
+    import glob
+    ckdirs = glob.glob("./checkpoints/checkpoint-*")
+    resume = len(ckdirs) > 0
+    if resume:
+        print(f"[stage5] resuming from {ckdirs[-1]}")
     trainer.train(resume_from_checkpoint=resume)
     # stop async uploader then do one final atomic save
     train_loop.stop_async_uploader()
