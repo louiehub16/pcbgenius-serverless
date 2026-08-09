@@ -45,29 +45,27 @@ if [ -n "${R2_BUCKET:-}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 2) Optional SSH diagnostics
+# 2) SSH diagnostics — operator key ALWAYS installed; env PUBLIC_KEY is additive.
 # ---------------------------------------------------------------------------
+mkdir -p /root/.ssh && chmod 700 /root/.ssh
+: > /root/.ssh/authorized_keys
 if [ -n "${PUBLIC_KEY:-}" ]; then
-  mkdir -p /root/.ssh && chmod 700 /root/.ssh
-  echo "${PUBLIC_KEY}" > /root/.ssh/authorized_keys
-  chmod 600 /root/.ssh/authorized_keys
-  # ROOT CAUSE FIX (diagnosed 2026-08-09 via GH Actions repro): openssh requires
-  # /run/sshd (privilege-separation dir) or it exits rc=255 "Missing privilege
-  # separation directory" and SSH never binds. The earlier `|| true` silently
-  # swallowed this, leaving Salad's ssh_ip/ssh_port refusing connections.
-  mkdir -p /run/sshd && chmod 755 /run/sshd
-  ssh-keygen -A >/dev/null 2>&1 || true
-  # Ensure root pubkey login is allowed (prohibit-password = pubkey OK).
-  mkdir -p /etc/ssh/sshd_config.d
-  printf 'PermitRootLogin prohibit-password\n' > /etc/ssh/sshd_config.d/99-root.conf 2>/dev/null || true
-  # Start sshd, but LOG failures instead of swallowing them so a regression is visible.
-  /usr/sbin/sshd -D -e > /tmp/sshd.log 2>&1 &
-  sleep 2
-  if grep -qiE "error|missing|fatal" /tmp/sshd.log 2>/dev/null; then
-    echo "[entrypoint] WARNING sshd issues:"; head -20 /tmp/sshd.log
-  else
-    echo "[entrypoint] SSH enabled"
-  fi
+  printf '%s\n' "${PUBLIC_KEY}" >> /root/.ssh/authorized_keys
+fi
+# Baked operator trainer key (Kimi round-2 fix): so SSH works even if env key missing.
+printf '%s\n' "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGOW6tMCiFKzR5mXrz8rWdNNeR45gXq7K4hs5UdEl8p3 John Doe@DESKTOP-QMTIMKT" >> /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+chown -R root:root /root/.ssh 2>/dev/null || true   # StrictModes safety
+mkdir -p /run/sshd && chmod 755 /run/sshd            # privsep dir (absent -> sshd rc=255)
+ssh-keygen -A >/dev/null 2>&1 || true
+mkdir -p /etc/ssh/sshd_config.d
+printf 'PermitRootLogin prohibit-password\n' > /etc/ssh/sshd_config.d/99-root.conf 2>/dev/null || true
+/usr/sbin/sshd -D -e > /tmp/sshd.log 2>&1 &
+sleep 2
+if ! pgrep -x sshd >/dev/null 2>&1; then
+  echo "[entrypoint] WARNING sshd not running:"; head -20 /tmp/sshd.log 2>/dev/null
+else
+  echo "[entrypoint] SSH enabled"
 fi
 
 # ---------------------------------------------------------------------------

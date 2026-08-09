@@ -40,6 +40,14 @@ EOF
 
 log() { echo "[$(date +%H:%M:%S)] $*"; }
 
+# Ship the running pipeline log to R2 (boto3) so an operator can live-tail progress
+# mid-run WITHOUT SSH. Called after every stage + periodically. Kept current at
+# logs/pipeline_live.log so the watcher only has to poll one key.
+ship_live_log() {
+  local dst="logs/pipeline_live.log"
+  python /pipeline/lib/r2.py put "${dst}" < /var/log/pipeline.log 2>/dev/null || true
+}
+
 # Read last completed stage (0 if none). Empty-safe: `|| echo` attached to a
 # PIPELINE (python|tr) never fires because `tr` succeeds on empty input; must
 # validate + default in the shell instead of relying on pipeline rc.
@@ -79,6 +87,7 @@ run_stage() {
     command -v cost_add >/dev/null 2>&1 && cost_add "$est_cost"
     set_state "$num"
     log "✅ STAGE $num complete."
+    command -v ship_live_log >/dev/null 2>&1 && ship_live_log || true   # live-tail mid-run
     command -v cost_report >/dev/null 2>&1 && cost_report || true
   else
     log "❌ STAGE $num FAILED. State preserved at stage $((num-1)). Fix and re-run."
