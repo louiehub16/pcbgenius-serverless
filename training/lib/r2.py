@@ -41,15 +41,19 @@ def ls(prefix):
 
 def sync_dir(local, remote_prefix):
     c = client()
-    n=0
+    n=0; skipped=0
     for root, dirs, files in os.walk(local):
         for fn in files:
             lp = os.path.join(root, fn)
+            # Skip 0-byte files: uploading them can overwrite a good R2 copy with
+            # empty output (data-loss guard, Kimi round-5).
+            if os.path.getsize(lp) == 0:
+                skipped += 1; continue
             rel = os.path.relpath(lp, local).replace("\\","/")
             rk = f"{remote_prefix.rstrip('/')}/{rel}" if remote_prefix else rel
             c.upload_file(lp, BUCK, rk)
             n+=1
-    print("synced", n, "files ->", remote_prefix)
+    print("synced", n, "files ->", remote_prefix, "(skipped", skipped, "empty)")
 
 if __name__ == "__main__":
     action = sys.argv[1]

@@ -78,12 +78,6 @@ ping_status() { # ping_status <status: done|failed|stuck> <note>
   if [ -n "${R2_BUCKET:-}" ]; then
     printf '%s %s %s\n' "$ts" "$st" "$note" | python /pipeline/lib/r2.py put "state/training_status.txt" 2>/dev/null || true
   fi
-  # POST to kanban (browser UA required - Cloudflare returns 403/1010 otherwise)
-  if [ -n "${KANBAN_URL:-}" ]; then
-    curl -s -X POST "${KANBAN_URL}" -H "Content-Type: application/json" \
-      -H "User-Agent: Mozilla/5.0 Chrome/126.0" \
-      --data "{\"agent\":\"trainer\",\"status\":\"$st\",\"feature\":\"training\",\"message\":\"$note\"}" >/dev/null 2>&1 || true
-  fi
   echo "[entrypoint] PING $st: $note" >&2
 }
 
