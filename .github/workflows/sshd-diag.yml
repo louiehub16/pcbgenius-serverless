@@ -11,28 +11,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Reproduce sshd startup exactly as entrypoint does (NO `|| true` swallow)
+      - name: Reproduce sshd startup WITHOUT the entrypoint (use --entrypoint bash)
         run: |
           set -x
-          # Simulate the container: build from the same Dockerfile, then run the
-          # SAME commands ssh_entrypoint.sh runs for SSH -- but WITHOUT the error swallow.
           docker pull $IMAGE
-          # We need a host key + authorized key to mimic the entrypoint env
           ssh-keygen -q -t ed25519 -N "" -f /tmp/tkey || true
           PUB=$(cat /tmp/tkey.pub)
-          docker run --rm -e PUBLIC_KEY="$PUB" $IMAGE bash -c '
+          # --entrypoint bash bypasses ssh_entrypoint.sh so we run ONLY the sshd steps
+          docker run --rm --entrypoint bash -e PUBLIC_KEY="$PUB" $IMAGE -c '
             set -x
             echo "=== /run/sshd exists? ==="
             ls -ld /run/sshd 2>&1 || echo "NO /run/sshd"
-            echo "=== authorized_keys write ==="
-            echo "$PUBLIC_KEY" > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
+            mkdir -p /root/.ssh && chmod 700 /root/.ssh
+            echo "$PUBLIC_KEY" > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys || true
             echo "=== ssh-keygen -A ==="
             ssh-keygen -A; echo "keygen rc=$?"
+            echo "=== which sshd ==="
+            which sshd; ls -la /usr/sbin/sshd
             echo "=== direct sshd start (no swallow) ==="
-            /usr/sbin/sshd
+            /usr/sbin/sshd -e
             echo "sshd rc=$?"
-            echo "=== listening? ==="
-            (command -v ss >/dev/null && ss -tlnp | grep -E ":22|sshd") ||               (command -v netstat >/dev/null && netstat -tlnp | grep :22) || echo "no ss/netstat"
-            echo "=== sshd_config root/login relevant ==="
-            grep -iE "PermitRootLogin|AuthorizedKeysFile|^Port" /etc/ssh/sshd_config
+            echo "=== sshd_config relevant ==="
+            grep -iE "PermitRootLogin|AuthorizedKeysFile|^Port" /etc/ssh/sshd_config || echo "no config grep"
+            echo "=== /run/sshd after start ==="
+            ls -ld /run/sshd 2>&1
+            echo "=== DONE ==="
           '
