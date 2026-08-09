@@ -33,26 +33,26 @@ setup_rclone
 if [ ! -f "$MARKER" ]; then
   echo "[bootstrap] installing CUDA-capable torch + unsloth (RTX 5090 sm_120)..."
   pip install --upgrade pip
-  # ── RTX 5090 (sm_120 / Blackwell) runtime deps (Kimi round-7 verified) ──────
-  # torch>=2.7 REQUIRED: first release with Blackwell consumer (sm_120) kernels.
-  # torch 2.6.x+cu124 only ships sm_50..sm_90 (the sm_120 warning we saw). cu126
-  # contains sm_120 for RTX 50-series (cu128 is only for datacenter sm_100/103).
-  pip install --no-cache-dir "torch==2.8.0" "torchvision==0.23.0" \
+  # ── RTX 5090 (sm_120 / Blackwell) runtime deps (Kimi round-7 + round-8 refined) ──
+  # torch>=2.7 adds Blackwell (sm_120) kernels; unsloth_zoo pins torchao>=0.13, but ONLY
+  # torchao 0.18 imports torch.nn.functional.ScalingType (which needs torch 2.10+). Since we
+  # stay on torch 2.9.1 (has sm_120 + register_constant), we MUST pin torchao >=0.13,<0.18
+  # (0.13-0.17 are torch-2.9.1-compatible and use their own internal ScalingType). cu126 is
+  # correct for consumer RTX 50-series. torch 2.9.1+cu126 cp310 wheel verified present.
+  pip install --no-cache-dir "torch==2.9.1" "torchvision==0.24.1" \
     --index-url https://download.pytorch.org/whl/cu126 || {
-    echo '[bootstrap] FATAL: torch 2.8.0+cu126 install failed (sm_120 host requires torch>=2.7)'
+    echo '[bootstrap] FATAL: torch 2.9.1+cu126 install failed'
     exit 1
   }
-  # torchao: register_constant exists in torch>=2.7, so torchao 0.10+ imports cleanly.
-  # The round-6 ==0.9.0 pin was for torch 2.6 — replace with the 2.7/2.8 window.
-  pip install --no-cache-dir "torchao>=0.10.0,<0.12.0" || {
+  # torchao: 0.13-0.17 imports cleanly on torch 2.9.1; 0.18+ needs torch>=2.10 (ScalingType).
+  pip install --no-cache-dir "torchao>=0.13,<0.18" || {
     echo '[bootstrap] FATAL: could not install torch-compatible torchao'
     exit 1
   }
-  # triton>=3.3.1 is REQUIRED for Blackwell per the unsloth Blackwell guide.
-  pip install --no-cache-dir "triton>=3.3.1" --index-url https://download.pytorch.org/whl/cu126 || true
-  # unsloth git main supports torch 2.7..2.9 (QLoRA NF4 backend = bitsandbytes).
-  pip install --no-cache-dir "unsloth[base] @ git+https://github.com/unslothai/unsloth.git" || \
-    pip install --no-cache-dir "unsloth[cu126-torch280] @ git+https://github.com/unslothai/unsloth.git" || \
+  # triton>=3.3 requirement handled by the torch wheel's triton dep; no separate clobbering install.
+  # unsloth: try the torch-2.9.1-matched extra FIRST so pip doesn't upgrade torch away from 2.9.1.
+  pip install --no-cache-dir "unsloth[cu126-torch291] @ git+https://github.com/unslothai/unsloth.git" || \
+    pip install --no-cache-dir "unsloth[base] @ git+https://github.com/unslothai/unsloth.git" || \
     pip install --no-cache-dir unsloth || {
     echo '[bootstrap] FATAL: unsloth install failed'
     exit 1
@@ -71,8 +71,12 @@ if torch.cuda.is_available():
     assert cap[0] == 12, f"Expected Blackwell (compute 12.x) but got {cap}"
     from torch.utils import _pytree
     assert hasattr(_pytree, "register_constant"), "torch.utils._pytree.register_constant missing!"
+    # NOTE: F.ScalingType is deliberately NOT asserted here — it only exists in torch 2.10+,
+    # and torchao 0.13-0.17 (what we pin) use their own internal ScalingType. Avoid asserting
+    # a torch-2.10-only symbol on our torch 2.9.1 host (Kimi round-8).
     import torchao
-    print("torchao", torchao.__version__, "OK -- register_constant present, GPU ready")
+    assert tuple(int(x) for x in torchao.__version__.split('.')[:2]) >= (0,13), f"torchao too old: {torchao.__version__}"
+    print("torchao", torchao.__version__, "OK -- GPU ready (sm_120 + register_constant verified)")
 else:
     print("[bootstrap] WARNING: no CUDA visible -- will try CPU path")
 PY
