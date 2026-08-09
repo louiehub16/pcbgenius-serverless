@@ -28,6 +28,23 @@ echo "[entrypoint] starting /healthz server..."
 nohup python /tmp/health.py >/dev/null 2>&1 &
 
 # ---------------------------------------------------------------------------
+# 1.5) OOM Protection Policy (RAM headroom check) + resilient R2 self-test
+# ---------------------------------------------------------------------------
+_TOTAL_RAM_GB=$(free -g 2>/dev/null | awk '/^Mem:/{print $2}' || echo "?")
+echo "[entrypoint] host RAM ~${_TOTAL_RAM_GB}GB"
+if [ "${_TOTAL_RAM_GB}" != "?" ] && [ "$_TOTAL_RAM_GB" -lt 8 ]; then
+  echo "[entrypoint] WARNING low RAM (${_TOTAL_RAM_GB}GB) — reducing thread oversubscription"
+  export OMP_NUM_THREADS=2 MKL_NUM_THREADS=2
+fi
+# Prove we can WRITE to R2 on this exact node BEFORE training writes anything.
+if [ -n "${R2_BUCKET:-}" ]; then
+  # boto3 is installed at Docker build time; defensive fallback in case not.
+  python -c 'import boto3' 2>/dev/null || pip install --no-cache-dir boto3 >/dev/null 2>&1 || true
+  printf 'ok %s\n' "$(date -u +%FT%TZ)" | python /pipeline/lib/r2.py put "state/conformance.txt" \
+    && echo "[entrypoint] R2 write OK (boto3 path)" || echo "[entrypoint] WARNING R2 write FAILED"
+fi
+
+# ---------------------------------------------------------------------------
 # 2) Optional SSH diagnostics
 # ---------------------------------------------------------------------------
 if [ -n "${PUBLIC_KEY:-}" ]; then
@@ -59,10 +76,9 @@ fi
 ping_status() { # ping_status <status: done|failed|stuck> <note>
   local st="$1"; local note="$2"
   local ts; ts=$(date -u +%FT%TZ)
-  # write marker to R2 via rclone (if configured) so the monitor can read it
-  if command -v rclone >/dev/null 2>&1 && [ -n "${R2_BUCKET:-}" ]; then
-    printf '%s %s %s\n' "$ts" "$st" "$note" > /tmp/training_status.txt
-    rclone copyto /tmp/training_status.txt "r2:${R2_BUCKET}/state/training_status.txt" 2>/dev/null || true
+  # write marker to R2 via boto3 helper (rclone rcat/copyto -> AccessDenied; boto3 works)
+  if [ -n "${R2_BUCKET:-}" ]; then
+    printf '%s %s %s\n' "$ts" "$st" "$note" | python /pipeline/lib/r2.py put "state/training_status.txt" 2>/dev/null || true
   fi
   # POST to kanban (browser UA required - Cloudflare returns 403/1010 otherwise)
   if [ -n "${KANBAN_URL:-}" ]; then
@@ -76,25 +92,15 @@ ping_status() { # ping_status <status: done|failed|stuck> <note>
 # ---------------------------------------------------------------------------
 # 3.5) HEARTBEAT daemon: burn a liveness tick to R2 state/heartbeat.txt every
 #      30s so an operator can confirm from outside that the pipeline is advancing
-#      (not blind). Uses copyto (which WORKED) not rcat (which silently failed to
-#      persist state). Self-configures rclone from env if not yet present.
+#      (not blind). Uses boto3 r2.py (proven to write to R2; rclone got AccessDenied).
 # ---------------------------------------------------------------------------
 (
-  if command -v rclone >/dev/null 2>&1 && [ -n "${R2_ACCESS_KEY:-}" ]; then
-    mkdir -p ~/.config/rclone
-    if [ ! -s ~/.config/rclone/rclone.conf ]; then
-      printf '[r2]\ntype = s3\nprovider = Cloudflare\naccess_key_id = %s\nsecret_access_key = %s\nendpoint = %s\nacl = private\n' \
-        "${R2_ACCESS_KEY:-}" "${R2_SECRET_KEY:-}" "${R2_ENDPOINT:-}" > ~/.config/rclone/rclone.conf
-    fi
-  fi
   while true; do
     _ts=$(date -u +%FT%TZ)
     _st=$(cat /work/pipeline_state.txt 2>/dev/null || echo "?")
     _co=$(cat /work/.cost_ledger 2>/dev/null || echo "0")
-    printf '%s stage=%s cost=%s alive\n' "$_ts" "$_st" "$_co" > /tmp/heartbeat.txt
-    if command -v rclone >/dev/null 2>&1 && [ -n "${R2_BUCKET:-}" ]; then
-      rclone copyto /tmp/heartbeat.txt "r2:${R2_BUCKET}/state/heartbeat.txt" 2>/dev/null || true
-    fi
+    printf '%s stage=%s cost=%s alive\n' "$_ts" "$_st" "$_co" \
+      | python /pipeline/lib/r2.py put "state/heartbeat.txt" 2>/dev/null || true
     sleep 30
   done
 ) &
@@ -115,8 +121,8 @@ touch "$HEARTBEAT"   # start the clock now (bootstrap is progress)
     sleep 60
     # progress = any checkpoint/model files appeared on R2 (or local /work)
     progress=""
-    if command -v rclone >/dev/null 2>&1 && [ -n "${R2_BUCKET:-}" ]; then
-      progress=$(rclone lsf "r2:${R2_BUCKET}/artifacts/checkpoints/" 2>/dev/null | wc -l)
+    if [ -n "${R2_BUCKET:-}" ]; then
+      progress=$(python /pipeline/lib/r2.py ls "artifacts/checkpoints/" 2>/dev/null | wc -l)
     fi
     if [ -n "$progress" ] && [ "$progress" -gt 0 ]; then
       touch "$HEARTBEAT"
@@ -142,8 +148,22 @@ WATCHDOG_PID=$!
 # ---------------------------------------------------------------------------
 # 5) Bootstrap: heavy deps + master pipeline (ships logs/training_*.log to R2)
 # ---------------------------------------------------------------------------
-echo "[entrypoint] running bootstrap (heavy deps + master pipeline)..."
+# 5.0) RESILIENT AUTO-RESUME: pull prior artifacts/data so an interrupted run
+#      resumes from its last checkpointed state instead of starting fresh.
+if [ -n "${R2_BUCKET:-}" ]; then
+  echo "[entrypoint] auto-resume: syncing prior artifacts/data/state from R2..."
+  python /pipeline/lib/r2.py ls "artifacts/data/" 2>/dev/null | head -20 || true
+  # pull data dir (rclone read works even though write was AccessDenied)
+  command -v rclone >/dev/null 2>&1 && mkdir -p /work && \
+    rclone copy "r2:${R2_BUCKET}/artifacts/data" /work/data --exclude "*.DS_Store" 2>/dev/null || true
+  python /pipeline/lib/r2.py get "state/pipeline_state.txt" 2>/dev/null > /work/pipeline_state_r2.txt && \
+    echo "[entrypoint] last stage on R2: $(cat /work/pipeline_state_r2.txt)" || \
+    echo "[entrypoint] no prior pipeline state — fresh run"
+fi
+echo "[entrypoint] running bootstrap (install deps) ..."
 bash /bootstrap.sh
+echo "[entrypoint] starting master pipeline..."
+bash /pipeline/master_pipeline.sh
 BOOT_RC=$?
 touch /opt/.pipeline_done
 

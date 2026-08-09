@@ -8,12 +8,19 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PYTHONUNBUFFERED=1 \
-    PATH="/root/.local/bin:/opt/venv/bin:$PATH"
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH="/root/.local/bin:/opt/venv/bin:$PATH" \
+    OMP_NUM_THREADS=4 \
+    MKL_NUM_THREADS=4 \
+    TORCH_EXTENSIONS_DIR=/tmp/torch_extensions \
+    CUDA_CACHE_PATH=/tmp/.nv_cache
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-pip python3-venv bash curl git unzip ca-certificates rclone openssh-server \
     && rm -rf /var/lib/apt/lists/* \
-    && python3 -m venv /opt/venv
+    && python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir boto3 \
+    && /opt/venv/bin/pip install --upgrade pip
 
 # SSH debug (accept PUBLIC_KEY from env; diagnostics only)
 RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh

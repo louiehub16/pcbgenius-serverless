@@ -40,18 +40,19 @@ EOF
 
 log() { echo "[$(date +%H:%M:%S)] $*"; }
 
-# Read last completed stage (0 if none)
+# Read last completed stage (0 if none). Empty-safe: `|| echo` attached to a
+# PIPELINE (python|tr) never fires because `tr` succeeds on empty input; must
+# validate + default in the shell instead of relying on pipeline rc.
 get_state() {
-  rclone cat "r2:${R2_BUCKET}/${STATE_KEY}" 2>/dev/null || echo "0"
+  local s
+  s=$(python /pipeline/lib/r2.py get "${STATE_KEY}" 2>/dev/null | tr -d '[:space:]')
+  if [[ "${s:-}" =~ ^[0-9]+$ ]]; then echo "$s"; else echo "0"; fi
 }
 set_state() {
-  # Use copyto, NOT rcat. Diagnosed 2026-08-09: `rclone rcat` silently failed to
-  # persist pipeline_state.txt on Cloudflare R2 (state never advanced past 2 ->
-  # stages re-ran in a loop, cost bled ~$10/tick past the $90 cap). copyto works.
-  local _f="/tmp/pipe_state_$$.txt"
-  printf '%s\n' "$1" > "$_f"
-  rclone copyto "$_f" "r2:${R2_BUCKET}/${STATE_KEY}"
-  rm -f "$_f"
+  # State/heartbeat/status writes go through the boto3 helper (r2.py), NOT rclone.
+  # Diagnosed 2026-08-09: `rclone rcat`/`copyto` → AccessDenied on Cloudflare R2,
+  # while boto3 SigV4 PUT with the same creds WORKS. r2.py uses boto3 => persists.
+  printf '%s\n' "$1" | python /pipeline/lib/r2.py put "${STATE_KEY}" || log "⚠ set_state $1 failed"
 }
 
 require_env() {
@@ -91,11 +92,13 @@ main() {
   require_env
   setup_rclone
 
-  # Install heavy training deps at container startup (GPU node disk), 
-  # so the image itself stays small and GH-build-friendly.
-  if [ -f /bootstrap.sh ]; then
-    log "▶ bootstrap: installing training deps..."
-    bash /bootstrap.sh || log "⚠ bootstrap reported failure (may be fine if deps present)"
+  # NOTE: heavy deps are installed by /bootstrap.sh, which the ENTRYPOINT runs
+  # BEFORE calling this master_pipeline.sh. Do NOT re-invoke bootstrap here —
+  # that causes bootstrap <-> master infinite recursion (Kimi review 2026-08-09).
+  if [ -n "${BOOTSTRAP_DONE:-}" ]; then
+    log "▶ bootstrap skipped (BOOTSTRAP_DONE=$BOOTSTRAP_DONE, entrypoint installed deps)"
+  else
+    log "▶ entrypoint already ran /bootstrap.sh before calling master"
   fi
 
   run_stage 1 "Seed data pull"                 "stage1_seed.sh"        "0"
@@ -108,8 +111,8 @@ main() {
   log "======================================================"
   log " 🎉 PIPELINE COMPLETE — model artifact on R2 + Fireworks"
   log "======================================================"
-  # ship the log
-  rclone copyto /var/log/pipeline.log "r2:${R2_BUCKET}/${LOG_KEY}" 2>/dev/null || true
+  # ship the log via boto3 helper (rclone WRITE to R2 = AccessDenied)
+  python /pipeline/lib/r2.py put "${LOG_KEY}" 2>/dev/null < /var/log/pipeline.log || true
 }
 
 main "$@" 2>&1 | tee -a /var/log/pipeline.log

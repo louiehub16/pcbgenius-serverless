@@ -5,9 +5,15 @@ WORK=/work
 cd "$WORK"
 echo "[stage5] Starting SFT fine-tune on H100..."
 python - <<'PY'
-import os
-# Full Unsloth QLoRA SFT recipe. Vision encoder frozen, LoRA on LLM layers.
-# Low-VRAM mode for 24-32GB (RTX 5090/4090): bs=1, grad-accum, seq clamped.
+import os, sys
+sys.path.insert(0, "/pipeline/lib")
+import train_loop
+# OPTIMIZATIONS (2026-08-09): CUDA/CPU env caps set in Dockerfile; here we add the
+# eviction-safe, atomic, resumable checkpoint + async upload + VRAM/OOM guards.
+train_loop.arm_eviction_handlers()          # Salad SIGTERM -> emergency save
+train_loop.oom_headroom_check(min_free_mem_gb=4.0)
+train_loop.start_async_uploader()
+
 def main():
     from unsloth import FastVisionModel
     from trl import SFTTrainer
@@ -16,6 +22,9 @@ def main():
     import torch
 
     max_seq = min(int(os.environ.get("MAX_SEQ", "2048")), 2048)
+    free_gb = train_loop.vram_safety_sweep(min_free_gb=2.0)
+    print(f"[stage5] VRAM free {free_gb:.2f}GB — proceeding at low-VRAM bs=1")
+
     model, tokenizer = FastVisionModel.from_pretrained(
         "Qwen/Qwen3-VL-32B-Instruct",
         max_seq_length=max_seq,
@@ -47,8 +56,26 @@ def main():
     trainer = SFTTrainer(model=model, tokenizer=tokenizer, train_dataset=ds,
                          dataset_text_field="text", max_seq_length=max_seq,
                          packing=True, args=args)
+
+    # Eviction-graceful: on SIGTERM (Salad preempt), emergency-save a checkpoint
+    # with bundled seeds so the next resume continues where it stopped.
+    def _emergency_save():
+        try:
+            ck = os.path.join("./checkpoints", f"evict_step{int(trainer.state.global_step)}")
+            trainer.save_model(ck)
+            train_loop.save_atomic_checkpoint(
+                {"step": trainer.state.global_step, **train_loop.bundle_seeds()},
+                "./checkpoints", name="resume_state.pt")
+            print(f"[stage5] emergency checkpoint saved at step {trainer.state.global_step}", flush=True)
+        except Exception as e:
+            print(f"[stage5] emergency save FAILED: {e}", flush=True)
+    train_loop.register_eviction_handler(_emergency_save)
+
     print("[stage5] training (resume if checkpoint exists)...")
-    trainer.train(resume_from_checkpoint=os.path.isdir("./checkpoints") and len(os.listdir("./checkpoints"))>0)
+    resume = os.path.isdir("./checkpoints") and len(os.listdir("./checkpoints"))>0
+    trainer.train(resume_from_checkpoint=resume)
+    # stop async uploader then do one final atomic save
+    train_loop.stop_async_uploader()
     model.save_pretrained("pcbgenius_final_model")
     tokenizer.save_pretrained("pcbgenius_final_model")
     print("[stage5] model saved to ./pcbgenius_final_model")
@@ -60,7 +87,7 @@ except ImportError as e:
     print("[stage5] In the GPU image this runs the real QLoRA SFT.")
 PY
 
-# sync checkpoints + final model to R2 (crash-safe)
-rclone copy "$WORK/checkpoints" "r2:${R2_BUCKET}/artifacts/checkpoints" --progress 2>/dev/null || true
-rclone copy "$WORK/pcbgenius_final_model" "r2:${R2_BUCKET}/artifacts/pcbgenius_final_model" --progress 2>/dev/null || true
+# sync checkpoints + final model to R2 via boto3 helper (rclone write -> AccessDenied)
+python /pipeline/lib/r2.py syncLocalDir "$WORK/checkpoints" "artifacts/checkpoints" 2>/dev/null || true
+python /pipeline/lib/r2.py syncLocalDir "$WORK/pcbgenius_final_model" "artifacts/pcbgenius_final_model" 2>/dev/null || true
 echo "[stage5] SFT artifacts synced to R2."

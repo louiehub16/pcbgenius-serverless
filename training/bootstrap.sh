@@ -25,7 +25,7 @@ acl = private
 EOF
   fi
 }
-ship_log() { rclone copyto "$LOG" "r2:${R2_BUCKET:-/}/$LOG_KEY" 2>/dev/null || true; }
+ship_log() { python /pipeline/lib/r2.py put "${LOG_KEY:-logs/startup.log}" < "$LOG" 2>/dev/null || true; }
 trap ship_log EXIT
 
 setup_rclone
@@ -39,10 +39,11 @@ if [ ! -f "$MARKER" ]; then
     pip install --no-cache-dir unsloth
   pip install --no-cache-dir --no-deps xformers trl peft accelerate bitsandbytes
   pip install --no-cache-dir datasets huggingface_hub wandb
+  pip install --no-cache-dir boto3        # R2 master helper (rclone -> AccessDenied on R2; boto3 works)
   touch "$MARKER"
   echo "[bootstrap] deps installed OK"
 else
   echo "[bootstrap] deps already present"
 fi
-echo "[bootstrap] bootstrap complete — starting master pipeline"
-bash /pipeline/master_pipeline.sh
+echo "[bootstrap] bootstrap complete — deps ready"
+exit 0
