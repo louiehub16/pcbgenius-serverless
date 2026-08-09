@@ -59,7 +59,13 @@ if [ ! -f "$MARKER" ]; then
   }
   # xformers OPTIONAL on sm_120 (unsloth falls back to native SDPA); --no-deps.
   pip install --no-cache-dir --no-deps xformers 2>/dev/null || true
-  pip install --no-cache-dir trl peft accelerate bitsandbytes boto3 datasets huggingface_hub wandb
+  pip install --no-cache-dir trl peft accelerate boto3 datasets huggingface_hub wandb
+  # FIX (realtime-stream 2026-08-09 round-9b): the "no kernel image for sm_120" error was
+  # bitsandbytes 4-bit dequant kernels lacking Blackwell support during LoRA adapter dtype
+  # cast. cu126 torch loads sm_120 fine (s13/s15 proved it); only bnb needs upgrading to a
+  # Blackwell-capable build. bitsandbytes 0.45+ has sm_120 kernels; pin a recent version.
+  pip install --no-cache-dir "bitsandbytes>=0.45,<0.51" || \
+    pip install --no-cache-dir -U bitsandbytes || true
   # Runtime self-check: fail fast, never silently continue on a wrong-GPU build.
   python - <<'PY'
 import torch
