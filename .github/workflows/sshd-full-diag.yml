@@ -1,0 +1,41 @@
+name: Full Entrypoint Diagnosis (real ENTRYPOINT, exec-in to inspect)
+on:
+  workflow_dispatch:
+
+env:
+  IMAGE: hrm3478938/pcbgenius-training:latest
+  R2_ACCESS_KEY: 3c3409aa4d7d489b4d01fb10e92aba06
+  R2_SECRET_KEY: 4860352c0ad6b9248638c4adf4681e537afab2283ff2f15e7b23fb85c1bec2d3
+  R2_ENDPOINT: https://abd12cd58366e2d99a202218328b1340.r2.cloudflarestorage.com
+  R2_BUCKET: pcgenius-build
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run REAL entrypoint (NOT --entrypoint override) and inspect
+        run: |
+          docker pull $IMAGE
+          ssh-keygen -q -t ed25519 -N "" -f /tmp/dkey || true
+          PUB=$(cat /tmp/dkey.pub)
+          # Run the image with its REAL docker ENTRYPOINT so we test step1+2+3.5 exactly.
+          docker run -d --name diag             -e PUBLIC_KEY="$PUB"             -e R2_ACCESS_KEY="$R2_ACCESS_KEY"             -e R2_SECRET_KEY="$R2_SECRET_KEY"             -e R2_ENDPOINT="$R2_ENDPOINT"             -e R2_BUCKET="$R2_BUCKET"             $IMAGE
+          # Let steps 1 (health), 2 (sshd), 3.5 (heartbeat) run ~50s
+          sleep 50
+          echo "=================== docker logs (real entrypoint stdout) ==================="
+          docker logs diag 2>&1 | head -60
+          echo "===================================================="
+          echo "--- inspect inside container ---"
+          docker exec diag sh -c '
+            echo "--- /run/sshd ---"; ls -ld /run/sshd 2>&1
+            echo "--- sshd running? ---"; ps aux | grep -i [s]shd || echo "NO sshd process"
+            echo "--- sshd.log ---"; cat /tmp/sshd.log 2>/dev/null | head -20 || echo "no sshd.log"
+            echo "--- port 22 listening? ---"; (ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep ":22 " || echo "NOT listening on 22"
+            echo "--- heartbeat file local ---"; cat /tmp/heartbeat.txt 2>/dev/null || echo "no local heartbeat"
+            echo "--- rclone config ---"; ls -la /root/.config/rclone/ 2>&1
+            echo "--- rclone test copyto ---"; printf "gh-actions-rclone-test\n" > /tmp/t.txt && rclone copyto /tmp/t.txt r2:$R2_BUCKET/conformance/rclone_test.txt 2>&1 && echo "RCLONE COPYTO OK" || echo "RCLONE COPYTO FAILED"
+          ' || echo "docker exec FAILED (container exited?)"
+          echo "--- does the node have a working SSH by trying local ssh loopback inside? ---"
+          docker exec diag sh -c 'ls -la /root/.ssh/'
+          echo "=== done ==="
