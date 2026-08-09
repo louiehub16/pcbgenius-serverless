@@ -42,9 +42,13 @@ fi
 # 3) Bootstrap: heavy deps + master pipeline. This prints the real stderr to the
 #    R2 startup log (bootstrap.sh ships logs/training_*.log) so we can debug.
 echo "[entrypoint] running bootstrap (heavy deps + master pipeline)..."
-bash /bootstrap.sh || { echo "[entrypoint] bootstrap failed"; }
+bash /bootstrap.sh
+BOOT_RC=$?
 touch /opt/.pipeline_done
-echo "[entrypoint] pipeline signaled done (health will now report ok:true)"
-
-# 4) Keep alive forever so the container never exits mid-SSH/diagnostic.
-while true; do sleep 3600; done
+if [ "$BOOT_RC" -eq 0 ]; then
+  echo "[entrypoint] pipeline COMPLETE — shutting down to stop Salad billing."
+  exit 0   # container exits -> Salad stops billing automatically
+else
+  echo "[entrypoint] pipeline FAILED (rc=$BOOT_RC) — staying alive for SSH/debug traces."
+  while true; do sleep 3600; done   # keep alive ONLY on failure for diagnosis
+fi
