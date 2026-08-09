@@ -31,27 +31,53 @@ trap ship_log EXIT
 setup_rclone
 
 if [ ! -f "$MARKER" ]; then
-  echo "[bootstrap] installing CUDA-capable torch + unsloth..."
+  echo "[bootstrap] installing CUDA-capable torch + unsloth (RTX 5090 sm_120)..."
   pip install --upgrade pip
-  pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu124 || \
-    pip install --no-cache-dir torch torchvision
-  # FIX (realtime-stream, 2026-08-09): pin torchao to a torch-2.6-compatible stable
-  # release BEFORE unsloth so the resolver respects it; a too-new torchao (0.10+)
-  # calls torch.utils._pytree.register_constant (absent in torch 2.6) -> SFT import
-  # crash. HARD-FAIL if the pin fails (wrong torchao is fatal at SFT import, and the
-  # $MARKER would otherwise block a retry). No stderr swallow: this log ships to R2.
-  pip install --no-cache-dir "torchao==0.9.0" || \
-    pip install --no-cache-dir "torchao>=0.9.0,<0.10" || \
-    { echo '[bootstrap] FATAL: could not pin torchao (needed for torch 2.6); aborting'; exit 1; }
-  pip install --no-cache-dir "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git" || \
-    pip install --no-cache-dir unsloth
-  pip install --no-cache-dir --no-deps xformers trl peft accelerate bitsandbytes
-  # Belt-and-suspenders: unsloth git may force-upgrade torchao post-install; re-assert the pin.
-  pip install --no-cache-dir "torchao==0.9.0" || true
-  pip install --no-cache-dir datasets huggingface_hub wandb
-  pip install --no-cache-dir boto3        # R2 master helper (rclone -> AccessDenied on R2; boto3 works)
+  # ── RTX 5090 (sm_120 / Blackwell) runtime deps (Kimi round-7 verified) ──────
+  # torch>=2.7 REQUIRED: first release with Blackwell consumer (sm_120) kernels.
+  # torch 2.6.x+cu124 only ships sm_50..sm_90 (the sm_120 warning we saw). cu126
+  # contains sm_120 for RTX 50-series (cu128 is only for datacenter sm_100/103).
+  pip install --no-cache-dir "torch==2.8.0" "torchvision==0.23.0" \
+    --index-url https://download.pytorch.org/whl/cu126 || {
+    echo '[bootstrap] FATAL: torch 2.8.0+cu126 install failed (sm_120 host requires torch>=2.7)'
+    exit 1
+  }
+  # torchao: register_constant exists in torch>=2.7, so torchao 0.10+ imports cleanly.
+  # The round-6 ==0.9.0 pin was for torch 2.6 — replace with the 2.7/2.8 window.
+  pip install --no-cache-dir "torchao>=0.10.0,<0.12.0" || {
+    echo '[bootstrap] FATAL: could not install torch-compatible torchao'
+    exit 1
+  }
+  # triton>=3.3.1 is REQUIRED for Blackwell per the unsloth Blackwell guide.
+  pip install --no-cache-dir "triton>=3.3.1" --index-url https://download.pytorch.org/whl/cu126 || true
+  # unsloth git main supports torch 2.7..2.9 (QLoRA NF4 backend = bitsandbytes).
+  pip install --no-cache-dir "unsloth[base] @ git+https://github.com/unslothai/unsloth.git" || \
+    pip install --no-cache-dir "unsloth[cu126-torch280] @ git+https://github.com/unslothai/unsloth.git" || \
+    pip install --no-cache-dir unsloth || {
+    echo '[bootstrap] FATAL: unsloth install failed'
+    exit 1
+  }
+  # xformers OPTIONAL on sm_120 (unsloth falls back to native SDPA); --no-deps.
+  pip install --no-cache-dir --no-deps xformers 2>/dev/null || true
+  pip install --no-cache-dir trl peft accelerate bitsandbytes boto3 datasets huggingface_hub wandb
+  # Runtime self-check: fail fast, never silently continue on a wrong-GPU build.
+  python - <<'PY'
+import torch
+assert int(torch.__version__.split('.')[1]) >= 7, f"torch {torch.__version__} too old for sm_120"
+if torch.cuda.is_available():
+    cap = torch.cuda.get_device_capability(0)
+    name = torch.cuda.get_device_name(0)
+    print("GPU:", name, "capability:", cap)
+    assert cap[0] == 12, f"Expected Blackwell (compute 12.x) but got {cap}"
+    from torch.utils import _pytree
+    assert hasattr(_pytree, "register_constant"), "torch.utils._pytree.register_constant missing!"
+    import torchao
+    print("torchao", torchao.__version__, "OK -- register_constant present, GPU ready")
+else:
+    print("[bootstrap] WARNING: no CUDA visible -- will try CPU path")
+PY
   touch "$MARKER"
-  echo "[bootstrap] deps installed OK"
+  echo "[bootstrap] deps installed OK (sm_120/Blackwell verified)"
 else
   echo "[bootstrap] deps already present"
 fi
