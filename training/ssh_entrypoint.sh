@@ -97,8 +97,16 @@ ping_status() { # ping_status <status: done|failed|stuck> <note>
     _ts=$(date -u +%FT%TZ)
     _st=$(cat /work/pipeline_state.txt 2>/dev/null || echo "?")
     _co=$(cat /work/.cost_ledger 2>/dev/null || echo "0")
-    printf '%s stage=%s cost=%s alive\n' "$_ts" "$_st" "$_co" \
-      | python /pipeline/lib/r2.py put "state/heartbeat.txt" 2>/dev/null || true
+    # ALSO capture the last pipeline-log lines so the operator sees exactly where
+    # master is (or the last error) even if it's mid-stage / crashed. This closes
+    # the "alive but blind" gap (continuous visibility, not just stage boundaries).
+    _plast=""
+    if [ -f /var/log/pipeline.log ]; then
+      _plast=$(tail -c 1500 /var/log/pipeline.log 2>/dev/null | tr '\n' '|')
+    fi
+    { printf '%s stage=%s cost=%s alive\n' "$_ts" "$_st" "$_co";
+      [ -n "$_plast" ] && printf 'PLOG: %s\n' "$_plast";
+    } | python /pipeline/lib/r2.py put "state/heartbeat.txt" 2>/dev/null || true
     sleep 30
   done
 ) &
