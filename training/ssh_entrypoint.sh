@@ -61,7 +61,8 @@ ping_status() { # ping_status <status: done|failed|stuck> <note>
   local ts; ts=$(date -u +%FT%TZ)
   # write marker to R2 via rclone (if configured) so the monitor can read it
   if command -v rclone >/dev/null 2>&1 && [ -n "${R2_BUCKET:-}" ]; then
-    echo "$ts $st $note" | rclone rcat "r2:${R2_BUCKET}/state/training_status.txt" 2>/dev/null || true
+    printf '%s %s %s\n' "$ts" "$st" "$note" > /tmp/training_status.txt
+    rclone copyto /tmp/training_status.txt "r2:${R2_BUCKET}/state/training_status.txt" 2>/dev/null || true
   fi
   # POST to kanban (browser UA required - Cloudflare returns 403/1010 otherwise)
   if [ -n "${KANBAN_URL:-}" ]; then
@@ -71,6 +72,33 @@ ping_status() { # ping_status <status: done|failed|stuck> <note>
   fi
   echo "[entrypoint] PING $st: $note" >&2
 }
+
+# ---------------------------------------------------------------------------
+# 3.5) HEARTBEAT daemon: burn a liveness tick to R2 state/heartbeat.txt every
+#      30s so an operator can confirm from outside that the pipeline is advancing
+#      (not blind). Uses copyto (which WORKED) not rcat (which silently failed to
+#      persist state). Self-configures rclone from env if not yet present.
+# ---------------------------------------------------------------------------
+(
+  if command -v rclone >/dev/null 2>&1 && [ -n "${R2_ACCESS_KEY:-}" ]; then
+    mkdir -p ~/.config/rclone
+    if [ ! -s ~/.config/rclone/rclone.conf ]; then
+      printf '[r2]\ntype = s3\nprovider = Cloudflare\naccess_key_id = %s\nsecret_access_key = %s\nendpoint = %s\nacl = private\n' \
+        "${R2_ACCESS_KEY:-}" "${R2_SECRET_KEY:-}" "${R2_ENDPOINT:-}" > ~/.config/rclone/rclone.conf
+    fi
+  fi
+  while true; do
+    _ts=$(date -u +%FT%TZ)
+    _st=$(cat /work/pipeline_state.txt 2>/dev/null || echo "?")
+    _co=$(cat /work/.cost_ledger 2>/dev/null || echo "0")
+    printf '%s stage=%s cost=%s alive\n' "$_ts" "$_st" "$_co" > /tmp/heartbeat.txt
+    if command -v rclone >/dev/null 2>&1 && [ -n "${R2_BUCKET:-}" ]; then
+      rclone copyto /tmp/heartbeat.txt "r2:${R2_BUCKET}/state/heartbeat.txt" 2>/dev/null || true
+    fi
+    sleep 30
+  done
+) &
+HB_PID=$!
 
 # ---------------------------------------------------------------------------
 # 4) STUCK-DETECTOR watchdog: monitors a progress heartbeat. If model weights

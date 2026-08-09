@@ -45,7 +45,13 @@ get_state() {
   rclone cat "r2:${R2_BUCKET}/${STATE_KEY}" 2>/dev/null || echo "0"
 }
 set_state() {
-  echo "$1" | rclone rcat "r2:${R2_BUCKET}/${STATE_KEY}"
+  # Use copyto, NOT rcat. Diagnosed 2026-08-09: `rclone rcat` silently failed to
+  # persist pipeline_state.txt on Cloudflare R2 (state never advanced past 2 ->
+  # stages re-ran in a loop, cost bled ~$10/tick past the $90 cap). copyto works.
+  local _f="/tmp/pipe_state_$$.txt"
+  printf '%s\n' "$1" > "$_f"
+  rclone copyto "$_f" "r2:${R2_BUCKET}/${STATE_KEY}"
+  rm -f "$_f"
 }
 
 require_env() {
@@ -65,7 +71,9 @@ run_stage() {
   fi
   log "▶️  STAGE $num: $name (est \$${est_cost})"
   if bash "$STAGES_DIR/$script"; then
-    command -v cost_add >/dev/null 2>&1 && cost_add "$est_cost" || true
+    # NO `|| true` here: cost_add exits non-zero (90) when spend exceeds cap, and
+    # that MUST propagate so the pipeline halts instead of bleeding past the cap.
+    command -v cost_add >/dev/null 2>&1 && cost_add "$est_cost"
     set_state "$num"
     log "✅ STAGE $num complete."
     command -v cost_report >/dev/null 2>&1 && cost_report || true
