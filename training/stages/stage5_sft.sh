@@ -24,11 +24,15 @@ def main():
     max_seq = min(int(os.environ.get("MAX_SEQ", "2048")), 2048)
     free_gb = train_loop.vram_safety_sweep(min_free_gb=2.0)
     print(f"[stage5] VRAM free {free_gb:.2f}GB — proceeding at low-VRAM bs=1")
+    # Model id configurable: default 32B (for 80GB A100/H100 on Hyperstack). On the 32GB
+    # RTX 5090 (Salad validation) use a smaller model — 32B QLoRA provably can't fit 32GB.
+    model_id = os.environ.get("MODEL_NAME", "Qwen/Qwen3-VL-8B-Instruct")
 
     model, tokenizer = FastVisionModel.from_pretrained(
-        "Qwen/Qwen3-VL-32B-Instruct",
+        model_id,
         max_seq_length=max_seq,
         load_in_4bit=True,
+        device_map="auto",
     )
     model = FastVisionModel.get_peft_model(
         model, r=64, lora_alpha=32, lora_dropout=0.05, bias="none",
