@@ -43,10 +43,43 @@ def main():
     # Prefer the verified dataset if stage3 produced it, else the raw training set.
     # (NOTE: do NOT `import os.path` here — it makes `os` a function-local var and
     #  breaks the earlier `os.environ` reads with UnboundLocalError. os is module-level.)
+    # ROBUST INPUT FETCH (realtime-stream 2026-08-10): stage 3 may be skipped on resume,
+    # and auto-resume's rclone copy of artifacts/processed can silently fail (the flaky
+    # path), leaving /work/data/processed empty -> datasets FileNotFoundError. Fetch the
+    # training input via boto3 r2.py if missing, exactly the proven stage-3 pattern.
+    _inp = "data/processed/pcbgenius_training_dataset.jsonl"
+    if (not os.path.exists(_inp)) or os.path.getsize(_inp) == 0:
+        import subprocess
+        os.makedirs(os.path.dirname(_inp), exist_ok=True)
+        with open(_inp, "wb") as f:
+            _rd = subprocess.run([sys.executable, "/pipeline/lib/r2.py", "get",
+                                  "artifacts/processed/pcbgenius_training_dataset.jsonl"], stdout=f)
+        if _rd.returncode != 0 or (os.path.exists(_inp) and os.path.getsize(_inp) == 0):
+            raise RuntimeError("[stage5] could not fetch training input from R2")
+        print(f"[stage5] pulled training input from R2 -> {_inp} ({os.path.getsize(_inp)} bytes)")
+    # Prefer verified dataset, but ALSO size-check (an empty verified file, the original
+    # rclone silent-failure cause, must not slip through) and fetch it via boto3 if empty.
+    # (Kimi round-10 MEDIUM)
     src = "data/processed/verified_dataset.jsonl"
-    if not os.path.exists(src):
-        src = "data/processed/pcbgenius_training_dataset.jsonl"
+    if (not os.path.exists(src)) or (os.path.getsize(src) == 0):
+        import subprocess
+        if os.path.exists(os.path.dirname(src)):
+            with open(src, "wb") as f:
+                _vrd = subprocess.run([sys.executable, "/pipeline/lib/r2.py", "get",
+                                       "artifacts/processed/verified_dataset.jsonl"], stdout=f)
+                if _vrd.returncode == 0 and os.path.getsize(src) > 0:
+                    print(f"[stage5] pulled verified dataset from R2 -> {src} ({os.path.getsize(src)} bytes)")
+                else:
+                    src = _inp  # fall back to the fetched training input
+        else:
+            src = _inp
     ds = load_dataset("json", data_files=src, split="train")
+    # CRITICAL (Kimi round-10): dataset columns are {prompt, netlist, skill} — there is NO
+    # "text" column, but SFTTrainer uses dataset_text_field="text" -> KeyError at construct.
+    # Build a "text" column with an EOS terminator (required because packing=True).
+    tok_eos = tokenizer.eos_token or ""
+    ds = ds.map(lambda ex: {"text": f"{ex.get('prompt','')}\n{ex.get('netlist','')}{tok_eos}"})
+    print(f"[stage5] dataset loaded: {len(ds)} rows from {src} (columns: {ds.column_names})")
 
     args = TrainingArguments(
         output_dir="./checkpoints",
