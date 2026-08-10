@@ -11,8 +11,23 @@ def main():
     from trl import DPOTrainer, DPOConfig
     from datasets import load_dataset
     import torch
+    # FIX (realtime-stream 2026-08-10): transformers 5.5 treats a relative './' path as a
+    # HF HUB repo id -> "Repo id must use alphanumeric chars... './pcbgenius_final_model'".
+    # Use the absolute local path + local_files_only=True so it loads the local SFT output.
     model, tokenizer = FastVisionModel.from_pretrained(
-        "./pcbgenius_final_model", load_in_4bit=True)
+        os.path.abspath("./pcbgenius_final_model"), load_in_4bit=True, local_files_only=True)
+    # ROBUST DPO INPUT (Kimi round-11): stage 6 has no R2 fetch fallback for dpo_pairs.
+    # Mirror stage-5's boto3 pattern so a missing/empty local file doesn't FileNotFoundError.
+    _dpo = "data/processed/dpo_pairs.jsonl"
+    if (not os.path.exists(_dpo)) or os.path.getsize(_dpo) == 0:
+        import subprocess
+        os.makedirs(os.path.dirname(_dpo), exist_ok=True)
+        with open(_dpo, "wb") as f:
+            _dd = subprocess.run([sys.executable, "/pipeline/lib/r2.py", "get",
+                                  "artifacts/processed/dpo_pairs.jsonl"], stdout=f)
+        if _dd.returncode != 0 or (os.path.exists(_dpo) and os.path.getsize(_dpo) == 0):
+            raise RuntimeError("[stage6] could not fetch dpo_pairs from R2")
+        print(f"[stage6] pulled dpo_pairs from R2 -> {_dpo} ({os.path.getsize(_dpo)} bytes)")
     ds = load_dataset("json", data_files="data/processed/dpo_pairs.jsonl", split="train")
     cfg = DPOConfig(output_dir="./dpo_out", per_device_train_batch_size=2,
                     gradient_accumulation_steps=8, max_steps=200, learning_rate=5e-5,
