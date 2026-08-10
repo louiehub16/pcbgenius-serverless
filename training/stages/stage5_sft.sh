@@ -89,7 +89,7 @@ def main():
         learning_rate=2e-4, bf16=True, fp16=False,
         logging_steps=10, optim="adamw_8bit", weight_decay=0.01,
         lr_scheduler_type="cosine", save_steps=100, save_total_limit=3,
-        use_liger_kernel=True, group_by_length=True,
+        use_liger_kernel=True,
     )
     trainer = SFTTrainer(model=model, tokenizer=tokenizer, train_dataset=ds,
                          dataset_text_field="text", max_seq_length=max_seq,
