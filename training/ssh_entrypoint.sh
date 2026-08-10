@@ -132,7 +132,15 @@ touch "$HEARTBEAT"   # start the clock now (bootstrap is progress)
     # (Auto-resume under section 5.0 guarantees /work is non-empty from the first
     # poll, so `ls -A /work` would touch the heartbeat forever and the stuck-abort
     # could never fire -> unbounded billing. Kimi re-review 2026-08-09.)
-    if [ -d /work ] && find /work -type f -mmin -10 2>/dev/null | head -1 | grep -q .; then
+    if [ -d /work ] && find /work -type f -mmin -30 2>/dev/null | head -1 | grep -q .; then
+      touch "$HEARTBEAT"; continue
+    fi
+    # BEST progress signal: the pipeline log itself. Unsloth/training write progress to
+    # /var/log/pipeline.log continuously (model load, step loop). If it was modified
+    # recently the process is alive — even during long in-memory/GPU phases with no disk
+    # writes (this false-positives "stuck" otherwise, killing legitimate 10-20min 32B
+    # model-load/setup phases -> the exact abort observed 2026-08-10 after ds.map). 
+    if [ -f /var/log/pipeline.log ] && [ $(( $(date +%s) - $(stat -c %Y /var/log/pipeline.log 2>/dev/null || date +%s) )) -lt "${STUCK_TIMEOUT_SEC}" ]; then
       touch "$HEARTBEAT"; continue
     fi
     # any elapsed > timeout with no progress -> stuck
