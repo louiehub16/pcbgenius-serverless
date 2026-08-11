@@ -134,6 +134,8 @@ except ImportError as e:
 PY
 
 # sync checkpoints + final model to R2 via boto3 helper (rclone write -> AccessDenied)
-python /pipeline/lib/r2.py syncLocalDir "$WORK/checkpoints" "artifacts/checkpoints" 2>/dev/null || true
-python /pipeline/lib/r2.py syncLocalDir "$WORK/pcbgenius_final_model" "artifacts/pcbgenius_final_model" 2>/dev/null || true
-echo "[stage5] SFT artifacts synced to R2."
+# LOUD (no `|| true` / 2>/dev/null): a silent swallow here lost the whole SFT model once
+# (old A100 was preempted, model never persisted). Fail loudly if it can't upload.
+python /pipeline/lib/r2.py syncLocalDir "$WORK/checkpoints" "artifacts/checkpoints"
+python /pipeline/lib/r2.py syncLocalDir "$WORK/pcbgenius_final_model" "artifacts/pcbgenius_final_model"
+echo "[stage5] SFT artifacts synced to R2 (loud)."

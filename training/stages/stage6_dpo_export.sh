@@ -5,7 +5,7 @@ WORK=/work
 cd "$WORK"
 echo "[stage6] DPO preference tuning + export..."
 python - <<'PY'
-import os
+import os, sys
 def main():
     from unsloth import FastVisionModel
     from trl import DPOTrainer, DPOConfig
@@ -14,8 +14,36 @@ def main():
     # FIX (realtime-stream 2026-08-10): transformers 5.5 treats a relative './' path as a
     # HF HUB repo id -> "Repo id must use alphanumeric chars... './pcbgenius_final_model'".
     # Use the absolute local path + local_files_only=True so it loads the local SFT output.
+    # ALSO: on a fresh resume node stage-5 is skipped, so /work/pcbgenius_final_model may not
+    # exist locally — fetch it from R2 (artifacts/pcbgenius_final_model) if missing, same as
+    # the dpo_pairs fallback below. Fixes "Repo id must be in the form repo_name...
+    # /work/pcbgenius_final_model ... AutoConfig & PeftConfig failed".
+    import subprocess  # needed by the model-fetch below (must be imported before use)
+    _fm = os.path.abspath("./pcbgenius_final_model")
+    if (not os.path.exists(_fm)) or not os.listdir(_fm):
+        os.makedirs(_fm, exist_ok=True)
+        # download all files under artifacts/pcbgenius_final_model (the adapter_config + weights)
+        _r2 = "/pipeline/lib/r2.py"
+        _lst = subprocess.run([sys.executable, _r2, "ls", "artifacts/pcbgenius_final_model"],
+                              capture_output=True, text=True).stdout
+        _n = 0
+        for line in _lst.splitlines():
+            parts = line.split()
+            if not parts or "artifacts/pcbgenius_final_model" not in parts[0]:
+                continue
+            okey = parts[0]
+            rel = okey.split("pcbgenius_final_model/",1)[-1]
+            rel = rel.replace("\\","/")
+            relp = os.path.join(_fm, rel)
+            os.makedirs(os.path.dirname(relp), exist_ok=True)
+            with open(relp,"wb") as f:
+                subprocess.run([sys.executable, _r2, "get", okey], stdout=f)
+            _n += 1
+        if _n == 0:
+            print("[stage6] WARN: no files fetched for pcbgenius_final_model from R2")
+        print(f"[stage6] fetched {_n} files into {_fm}")
     model, tokenizer = FastVisionModel.from_pretrained(
-        os.path.abspath("./pcbgenius_final_model"), load_in_4bit=True, local_files_only=True)
+        _fm, load_in_4bit=True, local_files_only=True)
     # ROBUST DPO INPUT (Kimi round-11): stage 6 has no R2 fetch fallback for dpo_pairs.
     # Mirror stage-5's boto3 pattern so a missing/empty local file doesn't FileNotFoundError.
     _dpo = "data/processed/dpo_pairs.jsonl"
