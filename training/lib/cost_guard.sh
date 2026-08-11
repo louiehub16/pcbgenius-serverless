@@ -1,26 +1,25 @@
 #!/bin/bash
 # ============================================================================
-# COST GUARD — auto-halts the pipeline if estimated Salad spend crosses a cap.
-# Sourced by master_pipeline.sh. Reads cost checkpoints written by each stage.
+# COST GUARD — DISABLED (cap removed 2026-08-10 per user decision).
+# We are no longer using the spend cap. The pipeline must NOT halt on spend.
+# This file now ONLY keeps a cumulative cost LEDGER for visibility/reporting;
+# it never exits non-zero and never halts training.
 #
-# Config via env:
-#   COST_CAP_USD   — hard cap; pipeline halts when estimated spend exceeds it.
-#                    Default 90 (your $111 deposit with headroom).
-#   COST_ALERT_USD — soft alert threshold (log a warning). Default 75.
+# Removed behavior (was): COST_CAP_USD hard-cap → `exit 90` halted the pipeline.
+# Now: cost_check() always returns 0; cost_add() only records to the ledger so
+# the running cost stays visible on R2 (state/.cost_ledger) and in cost_report.
 # ============================================================================
 
-COST_CAP_USD="${COST_CAP_USD:-90}"
-COST_ALERT_USD="${COST_ALERT_USD:-75}"
+COST_CAP_USD="${COST_CAP_USD:-0}"      # unused (cap disabled)
+COST_ALERT_USD="${COST_ALERT_USD:-0}"  # unused (alert disabled)
 WORK="${WORK:-/work}"
 COST_FILE="${WORK}/.cost_ledger"
-# R2 location for cumulative ledger (survives fresh-node resumes)
 COST_R2_KEY="state/.cost_ledger"
 _LEDGER_INIT=0
 
 mkdir -p "$WORK" 2>/dev/null || true
 
-# Lazy init: on first cost operation, pull prior cumulative ledger from R2.
-# Deferred because rclone is configured by master AFTER this file is sourced.
+# Lazy init: pull prior cumulative ledger from R2 for visibility continuity.
 _cost_init() {
   [ "$_LEDGER_INIT" = "1" ] && return 0
   _LEDGER_INIT=1
@@ -31,14 +30,13 @@ _cost_init() {
   [ -f "$COST_FILE" ] || echo "0" > "$COST_FILE"
 }
 
-# Persist ledger to R2 (best-effort; cumulative across resumes)
 _cost_sync() {
   if command -v rclone >/dev/null 2>&1 && [ -n "${R2_BUCKET:-}" ]; then
     rclone copyto "$COST_FILE" "r2:${R2_BUCKET}/${COST_R2_KEY}" 2>/dev/null || true
   fi
 }
 
-# cost_add <usd>  — call after each billed unit of work
+# cost_add <usd> — record spend to the ledger ONLY. Never halts. Always returns 0.
 cost_add() {
   _cost_init
   local amt="$1"
@@ -46,26 +44,26 @@ cost_add() {
   local new; new=$(awk -v a="$cur" -v b="$amt" 'BEGIN{printf "%.2f", a+b}')
   echo "$new" > "$COST_FILE"
   _cost_sync
-  cost_check "$new"
-}
-
-# cost_check [current]  — halt if over cap, warn if over alert
-cost_check() {
-  local cur="${1:-$(cat "$COST_FILE" 2>/dev/null || echo 0)}"
-  awk -v c="$cur" -v cap="$COST_CAP_USD" 'BEGIN{exit !(c+0>cap+0)}' && {
-    echo "🛑 [cost-guard] SPEND \$${cur} EXCEEDED CAP \$${COST_CAP_USD} — halting pipeline."
-    echo "🛑 [cost-guard] State is checkpointed to R2; top up + re-run to resume."
-    exit 90
-  }
-  awk -v c="$cur" -v a="$COST_ALERT_USD" 'BEGIN{exit !(c+0>a+0)}' && {
-    echo "⚠️  [cost-guard] spend \$${cur} crossed alert threshold \$${COST_ALERT_USD}"
-  }
+  reachable_cost_check "$new"
   return 0
 }
 
-# cost_report — print current estimated spend
+# cost_check — cap DISABLED. Always returns 0 (never halts). Kept for API parity.
+cost_check() {
+  _cost_init
+  return 0
+}
+
+# reachable_cost_check — cap DISABLED. Logs spend only; never halts.
+reachable_cost_check() {
+  local cur="${1:-$(cat "$COST_FILE" 2>/dev/null || echo 0)}"
+  echo "💰 [cost-guard] cumulative spend so far: \$${cur} (cap disabled)"
+  return 0
+}
+
+# cost_report — print current cumulative spend
 cost_report() {
   _cost_init
   local cur; cur=$(cat "$COST_FILE" 2>/dev/null || echo 0)
-  echo "💰 [cost-guard] estimated Salad spend so far: \$${cur} (cap \$${COST_CAP_USD})"
+  echo "💰 [cost-guard] cumulative spend so far: \$${cur} (cap disabled)"
 }

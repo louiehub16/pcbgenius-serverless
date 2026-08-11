@@ -89,7 +89,7 @@ def main():
         learning_rate=2e-4, bf16=True, fp16=False,
         logging_steps=10, optim="adamw_8bit", weight_decay=0.01,
         lr_scheduler_type="cosine", save_steps=100, save_total_limit=3,
-        use_liger_kernel=True,
+        use_liger_kernel=False,
     )
     trainer = SFTTrainer(model=model, tokenizer=tokenizer, train_dataset=ds,
                          dataset_text_field="text", max_seq_length=max_seq,
@@ -129,8 +129,12 @@ def main():
 try:
     main()
 except ImportError as e:
-    print(f"[stage5] SCAFFOLD: unsloth/trl not present in this image ({e}).")
-    print("[stage5] In the GPU image this runs the real QLoRA SFT.")
+    # NEVER treat a missing-import as a successful scaffold in the real GPU image: that
+    # silently let stage5 "succeed" with NO training (2026-08-10 → model never produced,
+    # cost charged, nothing trained). In the real unsloth image an ImportError is a genuine
+    # failure and MUST abort loudly so we never upload empty artifacts.
+    print(f"[stage5] FATAL ImportError (not scaffold — unsloth/trl must be present): {e}", flush=True)
+    raise
 PY
 
 # sync checkpoints + final model to R2 via boto3 helper (rclone write -> AccessDenied)
