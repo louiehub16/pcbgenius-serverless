@@ -57,9 +57,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libopenmpi3 libmumps-ptscotch-5.4 libscalapack-openmpi2.1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the source-built ElmerFEM solvers into /usr/local/bin.
+# Copy the source-built ElmerFEM solvers AND their shared libs into the final image.
+# ElmerSolver links libelmersolver.so (built into /opt/elmerfem/lib), so copying
+# only bin/ leaves it present-but-broken at runtime (caught by the ldd probe).
 COPY --from=elmerbuild /opt/elmerfem/bin/ /usr/local/bin/
-RUN chmod +x /usr/local/bin/ElmerSolver /usr/local/bin/ElmerSolver_mpi 2>/dev/null || true
+COPY --from=elmerbuild /opt/elmerfem/lib/ /usr/local/lib/
+ENV LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH:-}
+RUN chmod +x /usr/local/bin/ElmerSolver /usr/local/bin/ElmerSolver_mpi 2>/dev/null || true \
+ && ldconfig 2>/dev/null || true
 
 WORKDIR /work
 
