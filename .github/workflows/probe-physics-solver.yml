@@ -1,6 +1,6 @@
-# Probe the pushed pcbgenius-physics-solver image: run the REAL entrypoint
-# (which probes openEMS/gmsh/ElmerSolver/calculix binaries inside the container)
-# and print the resulting JSON verdict. Confirms which solvers actually shipped.
+# Probe the pushed pcbgenius-physics-solver image: run the REAL entrypoint (probe
+# of openEMS/gmsh/ElmerSolver/ccx presence) AND ldd each solver binary to confirm
+# no missing shared objects at runtime. Confirms which solvers actually ship AND run.
 name: Probe Physics Solver Image
 
 on:
@@ -13,10 +13,24 @@ jobs:
       - name: Pull image from Docker Hub
         run: docker pull hrm3478938/pcbgenius-physics-solver:latest
 
-      - name: Run actual entrypoint (probe all 4 solvers)
+      - name: Run entrypoint (presence probe)
         run: |
           echo "=== running entrypoint (probe) ==="
           docker run --rm hrm3478938/pcbgenius-physics-solver:latest
-          echo "=== explicit which checks (belt + suspenders) ==="
-          docker run --rm --entrypoint sh hrm3478938/pcbgenius-physics-solver:latest -c \
-            'for b in openEMS openems gmsh ElmerSolver ccx calculix; do printf "%s: " "$b"; command -v "$b" || echo MISSING; done'
+
+      - name: Explicit which checks + ldd (missing-lib detection)
+        run: |
+          docker run --rm --entrypoint sh hrm3478938/pcbgenius-physics-solver:latest -c '
+            echo "=== presence (which) ==="
+            for b in openEMS gmsh ElmerSolver ccx; do printf "%s: " "$b"; command -v "$b" || echo MISSING; done
+            echo "=== ldd missing-lib check (any "not found" = broken at runtime) ==="
+            for b in /usr/bin/openEMS /usr/bin/gmsh /usr/local/bin/ElmerSolver /usr/bin/ccx; do
+              if [ -e "$b" ]; then
+                printf "%s -> " "$b"
+                missing=$(ldd "$b" 2>/dev/null | grep -c "not found" || true)
+                if [ "$missing" -eq 0 ]; then echo "OK (all libs linked)"; else echo "MISSING_LIBS=$missing"; ldd "$b" 2>/dev/null | grep "not found"; fi
+              fi
+            done
+            echo "=== ElmerSolver is executable + reports build ==="
+            /usr/local/bin/ElmerSolver -info 2>&1 | head -5 || echo "(ElmerSolver -info not supported; presence+ldd is the check)"
+            '
