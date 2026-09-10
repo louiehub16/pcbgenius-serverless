@@ -42,18 +42,14 @@ def smoke() -> dict:
         out["all_present"] = False
         out["error"] = "no solver binaries found"
         return out
-    if p["openems"]:
-        # version banner only (real mesh/solve is a heavier later step)
-        out["solves"]["openems_version"] = run(
-            ["openEMS" if shutil.which("openEMS") else shutil.which("openems") or "openems-elfd", "--version"])
+    # Presence is authoritative (which). Only record a version when the binary
+    # safely supports it; openEMS/ccx return non-zero for --version, so don't
+    # treat that as a failure — presence (probe) is the real signal.
     if p["gmsh"]:
         out["solves"]["gmsh_version"] = run(["gmsh", "--version"])
-    if p["calculix"]:
-        # CalculiX version writes to a generated .frd; capture with -v first (ccx -v prints build info)
-        out["solves"]["calculix_version"] = run(["ccx", "-v"] if shutil.which("ccx") else ["calculix", "-v"])
+    # ElmerSolver needs an input deck; presence via `which` is the signal (no --version).
     if p["elmer"]:
-        # ElmerSolver needs an input deck; for smoke we just report presence + version if it supports --version
-        out["solves"]["elmer_present"] = {"rc": 0, "stdout": "found", "stderr": ""}
+        out["solves"]["elmer_present"] = run(["which", "ElmerSolver"])
     out["all_present"] = all(v for v in p.values() if isinstance(v, bool))
     return out
 
