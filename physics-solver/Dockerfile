@@ -66,6 +66,16 @@ ENV LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH:-}
 RUN chmod +x /usr/local/bin/ElmerSolver /usr/local/bin/ElmerSolver_mpi 2>/dev/null || true \
  && ldconfig 2>/dev/null || true
 
+# MUMPS parallel packaging quirk: Ubuntu ships lib{dmumps,smumps,cmumps,zmumps}_ptscotch-5.4.so
+# (underscore names from libmumps-ptscotch-5.4), but ElmerSolver was linked against the
+# plain SONAMEs lib{dmumps,smumps,cmumps,zmumps}-5.4.so. Symlink the ptscotch libs so the
+# run-time loader resolves them (root cause found via the ldd diagnostic probe).
+RUN cd /usr/lib/x86_64-linux-gnu && \
+    for b in d s c z; do \
+      ln -sf lib${b}mumps_ptscotch-5.4.so lib${b}mumps-5.4.so 2>/dev/null || true; \
+    done && \
+    ldconfig 2>/dev/null || true
+
 WORKDIR /work
 
 # Thin runtime entrypoint: probes the exact binaries pcbgenius-physics/runner.py
