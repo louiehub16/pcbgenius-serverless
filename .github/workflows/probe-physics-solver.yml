@@ -1,6 +1,6 @@
-# Probe the pushed pcbgenius-physics-solver image: run the REAL entrypoint (probe
-# of openEMS/gmsh/ElmerSolver/ccx presence) AND ldd each solver binary to confirm
-# no missing shared objects at runtime. Confirms which solvers actually ship AND run.
+# Probe the pushed pcbgenius-physics-solver image: run the REAL entrypoint + ldd
+# each solver, and for ElmerSolver print the FULL missing-lib chain + loader path
+# so runtime library gaps are diagnosed precisely (not guessed).
 name: Probe Physics Solver Image
 
 on:
@@ -10,27 +10,23 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Pull image from Docker Hub
+      - name: Pull image
         run: docker pull hrm3478938/pcbgenius-physics-solver:latest
 
       - name: Run entrypoint (presence probe)
-        run: |
-          echo "=== running entrypoint (probe) ==="
-          docker run --rm hrm3478938/pcbgenius-physics-solver:latest
+        run: docker run --rm hrm3478938/pcbgenius-physics-solver:latest
 
-      - name: Explicit which checks + ldd (missing-lib detection)
+      - name: which + ldd (full missing-lib diagnosis)
         run: |
           docker run --rm --entrypoint sh hrm3478938/pcbgenius-physics-solver:latest -c '
-            echo "=== presence (which) ==="
+            echo "=== presence ==="
             for b in openEMS gmsh ElmerSolver ccx; do printf "%s: " "$b"; command -v "$b" || echo MISSING; done
-            echo "=== ldd missing-lib check (any "not found" = broken at runtime) ==="
-            for b in /usr/bin/openEMS /usr/bin/gmsh /usr/local/bin/ElmerSolver /usr/bin/ccx; do
-              if [ -e "$b" ]; then
-                printf "%s -> " "$b"
-                missing=$(ldd "$b" 2>/dev/null | grep -c "not found" || true)
-                if [ "$missing" -eq 0 ]; then echo "OK (all libs linked)"; else echo "MISSING_LIBS=$missing"; ldd "$b" 2>/dev/null | grep "not found"; fi
-              fi
-            done
-            echo "=== ElmerSolver is executable + reports build ==="
-            /usr/local/bin/ElmerSolver -info 2>&1 | head -5 || echo "(ElmerSolver -info not supported; presence+ldd is the check)"
+            echo "=== ldd ElmerSolver (FULL missing chain) ==="
+            ldd /usr/local/bin/ElmerSolver 2>&1 | grep -E "not found|=>" | head -40
+            echo "=== loader path ==="
+            echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
+            echo "=== what MUMPS/scalapack/scotch libs are actually present ==="
+            ls -1 /usr/lib/x86_64-linux-gnu/ | grep -iE "mumps|scalapack|scotch|parmetis|openblas" | head -40
+            echo "=== where does apt think libmumps-ptscotch-5.4 installs .so? ==="
+            dpkg -L libmumps-ptscotch-5.4 2>/dev/null | grep -E "\.so" | head
             '
