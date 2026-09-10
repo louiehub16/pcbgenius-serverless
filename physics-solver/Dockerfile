@@ -46,11 +46,15 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
 
 # Python toolchain + the 3 apt-confirmed solvers + mesh gen.
+# ElmerFEM binaries are copied from the build stage and were compiled WITH_Mumps=ON +
+# WITH_MPI=ON, so they dynamically need the parallel MUMPS + OpenMPI RUNTIME libs.
+# Correct jammy names: libmumps-ptscotch-5.4 + libscalapack-openmpi2.1 + libopenmpi3
+# (NOT "libmumps-ptscotch" — that name does not exist under jammy).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-numpy python3-scipy python3-matplotlib \
     curl ca-certificates \
     openems gmsh calculix-ccx \
-    libopenmpi3 libmumps-ptscotch \
+    libopenmpi3 libmumps-ptscotch-5.4 libscalapack-openmpi2.1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the source-built ElmerFEM solvers into /usr/local/bin.
