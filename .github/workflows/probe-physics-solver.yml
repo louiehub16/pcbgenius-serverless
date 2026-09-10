@@ -1,0 +1,22 @@
+# Probe the pushed pcbgenius-physics-solver image: run the REAL entrypoint
+# (which probes openEMS/gmsh/ElmerSolver/calculix binaries inside the container)
+# and print the resulting JSON verdict. Confirms which solvers actually shipped.
+name: Probe Physics Solver Image
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pull image from Docker Hub
+        run: docker pull hrm3478938/pcbgenius-physics-solver:latest
+
+      - name: Run actual entrypoint (probe all 4 solvers)
+        run: |
+          echo "=== running entrypoint (probe) ==="
+          docker run --rm hrm3478938/pcbgenius-physics-solver:latest
+          echo "=== explicit which checks (belt + suspenders) ==="
+          docker run --rm --entrypoint sh hrm3478938/pcbgenius-physics-solver:latest -c \
+            'for b in openEMS openems gmsh ElmerSolver ccx calculix; do printf "%s: " "$b"; command -v "$b" || echo MISSING; done'
