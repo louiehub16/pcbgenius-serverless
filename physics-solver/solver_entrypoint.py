@@ -72,7 +72,21 @@ def main() -> int:
     else:
         job = {"engine": "smoke"}
     result = run_job(job)
-    print(json.dumps(result, indent=2))
+    out = json.dumps(result, indent=2)
+    print(out, flush=True)
+    # Salad Gold Rule #3: a process that exits is treated as a crash and the
+    # instance is auto-restarted in a loop. For a one-shot probe, persist the
+    # result to a file AND keep the process alive so Salad marks the instance
+    # "running" (catches the output), then it exits cleanly.
+    try:
+        with open("/work/probe_result.json", "w", encoding="utf-8") as f:
+            f.write(out)
+    except Exception:
+        pass
+    # Keep alive long enough for Salad to register the instance as running and
+    # an operator to read /work/probe_result.json; then exit 0 cleanly.
+    import time
+    time.sleep(60)
     return 0
 
 
