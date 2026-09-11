@@ -50,7 +50,7 @@ def smoke() -> dict:
     # ElmerSolver needs an input deck; presence via `which` is the signal (no --version).
     if p["elmer"]:
         out["solves"]["elmer_present"] = run(["which", "ElmerSolver"])
-    out["all_present"] = all(v for v in p.values() if isinstance(v, bool))
+    out["all_present"] = all(p.values())
     return out
 
 
@@ -101,21 +101,31 @@ def _try_upload_r2(result: dict, out: str) -> None:
     endpoint = os.environ.get("R2_ENDPOINT_URL") or os.environ.get("R2_ENDPOINT")
     bucket = os.environ.get("BUCKET_NAME") or os.environ.get("R2_BUCKET")
     ak = os.environ.get("AWS_ACCESS_KEY_ID") or os.environ.get("R2_ACCESS_KEY")
-    sk = os.environ.get("AWS_SECRET_ACCESS_KEY") or os.environ.get("R2_SECRET")
+    sk = os.environ.get("AWS_SECRET_ACCESS_KEY") or os.environ.get("R2_SECRET") or os.environ.get("R2_SECRET_KEY")
     if not (endpoint and bucket and ak and sk):
-        print("[probe] R2 creds not all present — skipping upload (local copy kept)", flush=True)
+        print(f"[probe] R2 creds not all present (endpoint={bool(endpoint)} bucket={bool(bucket)} "
+              f"ak={bool(ak)} sk={bool(sk)}) — skipping upload (local copy kept)", flush=True)
         return
     try:
         import boto3
         from botocore.client import Config
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FT
         key = "physics/probe_result.json"
         s3 = boto3.client(
             "s3", endpoint_url=endpoint,
             aws_access_key_id=ak, aws_secret_access_key=sk,
-            config=Config(signature_version="s3v4"),
+            config=Config(signature_version="s3v4", connect_timeout=10, read_timeout=15,
+                          retries={"max_attempts": 1}),
             region_name="auto",
         )
-        s3.put_object(Bucket=bucket, Key=key, Body=out.encode(), ContentType="application/json")
+        # Hard per-request cap: put_object alone can stall past connect/read timeouts
+        # on a pathological endpoint. Run it in a worker thread and abort at 25s so the
+        # container can never hang (Gemini HIGH fix).
+        def _put():
+            s3.put_object(Bucket=bucket, Key=key, Body=out.encode(), ContentType="application/json")
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            f = ex.submit(_put)
+            f.result(timeout=25)
         print(f"[probe] uploaded result -> s3://{bucket}/{key}", flush=True)
     except Exception as e:
         print(f"[probe] R2 upload failed (non-fatal): {str(e)[:120]}", flush=True)
