@@ -455,12 +455,20 @@ def main() -> int:
     #      read a local file; with R2 upload the container can exit immediately. We hold
     #      briefly so Salad marks the instance running / an operator can see it, then exit 0.
     _time.sleep(15)
-    # GPT-sol MED: exit non-zero when verification FAILED so an operator trusting
-    # the process exit code can detect it (the JSON + verified_all remains the truth;
-    # this simply makes a failure observable via exit status too). Salad restart_policy=never
-    # treats a non-zero exit as completion, not a crash-loop, so billing still halts.
-    if not result.get("verified_all", True):
-        print("[probe] verified_all=False -> exiting non-zero (1) to signal verification failure",
+    # HARD-FAIL exit semantics: exit non-zero ONLY when an engine genuinely
+    # HARD-FAILED (ok is False), so an operator trusting the process exit code
+    # can detect a real failure. ok=None is DOCUMENTED INCONCLUSIVE (openems =
+    # numeric_reference, full 5.8GHz FDTD sweep not run in micro mode; elmer =
+    # EXIT-ONLY best-effort case that can only ever be None) and is REPORTED in
+    # the JSON but is NOT a crash. This is the same PASS/FAIL/INDETERMINATE
+    # discipline used across the verification suite: INDETERMINATE (None) is
+    # never treated as FAIL. So a run-once Salad instance with no hard failure
+    # completes cleanly (exit 0) and halts billing. Salad restart_policy=never
+    # treats any completion as a stop (non-crash-loop), so billing still halts.
+    hard_fail = any(v.get("ok") is False
+                    for v in (result.get("verification") or {}).values())
+    if hard_fail:
+        print("[probe] an engine HARD-FAILED -> exiting non-zero (1) to signal verification failure",
               flush=True)
         return 1
     return 0
