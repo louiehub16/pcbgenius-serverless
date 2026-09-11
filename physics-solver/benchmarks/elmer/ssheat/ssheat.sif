@@ -1,0 +1,60 @@
+! ============================================================
+!  ssheat.sif — PCBGenius ElmerFEM verification micro case
+!  (steady-state electrostatics, parallel-plate pair)
+! ============================================================
+!  LEVEL: EXIT-ONLY (clean-converged gate; no numeric parsed here)
+!  The runner for Elmer checks ONLY that ElmerSolver produces a clean,
+!  normal completion (exit 0 + completion marker / .result artifact). It
+!  does NOT parse a numeric result, because (a) the image ships no official
+!  Elmer example mesh, and (b) ElmerGrid's gmsh reader is not compiled into
+!  this image's build, so a mesh must be pre-produced by an operator.
+!
+!  Analytic expectation (documented, NOT used in the gate):
+!     Parallel-plate capacitance  C = eps0 * A / d
+!     eps0 = 8.8541878128e-12 F/m ; unit 1x1 plates 1 m apart
+!       -> C = 8.8541878128e-12 F
+!
+!  The accompanying ssheat.nodes/.element/.boundary is a BEST-EFFORT 1-D
+!  line-pair mesh so ElmerSolver has something to load. It is UNVALIDATED
+!  offline (no solvers on the authoring VM) — if ElmerSolver cannot accept
+!  it or does not complete cleanly, the runner reports ok=None
+!  (inconclusive) with Elmer's stderr, never a fabricated PASS.
+! ============================================================
+
+Header
+  CHECK KEYWORDS WARN
+  MATCH FILE NAMES
+End
+
+Simulation
+  Max Output Level = 5
+  Coordinate System = Cartesian
+  Simulation Type = Steady State
+  Steady State Max Iterations = 1
+  Steady State Min Iterations = 1
+  Output File = ssheat.result
+  Output Intervals = 1
+End
+
+Constants
+  Permittivity of Vacuum = 8.8541878128E-12
+End
+
+Body 1
+  Target Bodies = 1
+  Equation = "StatElecSolve"
+  Permittivity = 1.0
+End
+
+Solver 1
+  Equation = "StatElecSolve"
+  Procedure = "StatElecSolve" "StatElecSolver"
+  Variable = Potential
+  Exec Solve = Integer 1
+End
+
+Boundary Condition 1
+  Target Bodies = 1
+  Name = "hot_plate"
+  Potential = Variable "Pot_e"
+End
