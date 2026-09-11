@@ -183,59 +183,88 @@ _CALC_TOL = 0.02
 
 
 def _max_abs_displacement(f01: str):
+    """Return the max nodal displacement magnitude from a CalculiX *.dat file.
+
+    CalculiX *NODE PRINT, NSET=EALL, FREQUENCY=1 with variable U writes a
+    section to the .dat (unit 5) headed by a line like
+        displacements (vx,vy,vz) for set EALL and time 1.0000000E+00
+    followed by a column-header line (node U1 U2 U3 / node vx vy vz) and then
+    one row per node (Fortran E-notation):
+         3     2.5000000E-03   0.0000000E+00   0.0000000E+00
+
+    Only rows matching [node, U1, U2, U3] are ever read, and only U1/U2/U3
+    contribute: magnitude = sqrt(U1^2+U2^2+U3^2). This guarantees an unrelated
+    huge value elsewhere in the .dat (a time/increment token, a header field,
+    a coordinate, the later FORCES/other numeric sections, etc.) can NEVER be
+    mistaken for the peak displacement -- the old code took abs() of every
+    float token in the table and returned the maximum, which grabbed a stray
+    ~6.5e12 field instead of the 0.0025 mm real nodal displacement.
+
+    The table ends at the first blank line or non-node-first-token line once
+    real node rows have been seen. If no valid displacement row is found,
+    returns None.
+    """
     try:
         txt = open(f01, encoding="utf-8", errors="replace").read()
     except Exception:
         return None
-    # CalculiX *NODE PRINT, NSET=EALL, FREQUENCY=1 with variable U writes a
-    # section to the .dat (unit 5) headed by a SINGLE line like:
-    #     displacements (vx,vy,vz) for set EALL and time 1.0000000E+00
-    # followed by a blank line and then one row per node:
-    #         node         U1           U2           U3
-    # where each value is Fortran E-notation (e.g. 2.500000E-03, 0.000000E+00).
-    # The table ends at the first blank line after data rows (or a non-node
-    # line). We scan every such section and return the max |U| across the
-    # U1,U2,U3 columns. (Note: the header keeps '... for set ... and time ...'
-    # on the SAME line as 'displacements', so we match the substring, not
-    # '<word>\n'.)
-    peak = -1.0
-    found = False
+
+    def _node_mag(toks):
+        # A displacement data row is exactly [node, U1, U2, U3]. Parse ONLY
+        # those four columns; anything else (missing cols, non-numeric, or a
+        # node id outside a sane mesh range) is rejected.
+        if len(toks) < 4:
+            return None
+        try:
+            nid = int(toks[0])
+        except (ValueError, TypeError):
+            return None
+        if not (1 <= nid <= 99999):
+            return None
+        try:
+            u1, u2, u3 = float(toks[1]), float(toks[2]), float(toks[3])
+        except (ValueError, TypeError):
+            return None
+        # Magnitude, never the raw max, so a large single component with tiny
+        # others is still handled correctly; and no other token is consulted.
+        return (u1 * u1 + u2 * u2 + u3 * u3) ** 0.5
+
+    peak = None
     in_table = False
-    seen_data = False
+    seen_node_row = False
     for line in txt.splitlines():
         low = line.strip().lower()
         if not in_table:
             if "displacement" in low:
                 in_table = True
-                seen_data = False
             continue
         toks = line.split()
         if not toks:
-            # a blank line ends a displacement table once rows have been seen;
-            # a blank immediately after any header line is skipped harmlessly.
-            if seen_data:
-                in_table = False
+            # Blank line: ends the data table (harmlessly skipped before any
+            # node rows, e.g. the blank right after the section header).
+            if seen_node_row:
+                break
             continue
         try:
             int(toks[0])
         except ValueError:
-            # A non-numeric first token is a COLUMN-HEADER row (e.g. "node  U1  U2  U3"
-            # or "node  vx  vy  vz") that immediately precedes the data rows. Skip it —
-            # do NOT end the table here, or the peak is never read (this was a bug).
-            # Only end the table on a blank line AFTER numeric rows have been seen.
-            if seen_data:
-                in_table = False
+            # Non-numeric first token: a column-header row ('node U1 U2 U3')
+            # before data -> skip; anything else after data -> end the table.
+            if seen_node_row:
+                break
             continue
-        seen_data = True
-        for tok in toks[1:]:
-            try:
-                v = abs(float(tok))
-            except ValueError:
-                continue
-            found = True
-            if v > peak:
-                peak = v
-    return peak if found else None
+        mag = _node_mag(toks)
+        if mag is None:
+            # Integer first token but not a valid [node,U1,U2,U3] row. If real
+            # node rows have been seen, this is likely the start of the next
+            # numeric-headed section (e.g. FORCES) -> stop; otherwise ignore.
+            if seen_node_row:
+                break
+            continue
+        seen_node_row = True
+        if peak is None or mag > peak:
+            peak = mag
+    return peak
 
 
 def _verify_calculix(present: bool, root: str, sh) -> dict:
