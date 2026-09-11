@@ -56,7 +56,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openems gmsh calculix-ccx \
     libopenmpi3 libmumps-ptscotch-5.4 libscalapack-openmpi2.1 \
     && rm -rf /var/lib/apt/lists/* \
-    && python3 -m pip install --no-cache-dir --break-system-packages boto3
+    && python3 -m pip install --no-cache-dir --upgrade pip \
+    && python3 -m pip install --no-cache-dir boto3
 
 # Copy the source-built ElmerFEM solvers AND their shared libs into the final image.
 # ElmerSolver links libelmersolver.so (built into /opt/elmerfem/lib), so copying
