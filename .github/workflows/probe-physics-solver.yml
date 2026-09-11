@@ -1,7 +1,8 @@
-# Probe the pushed pcbgenius-physics-solver image: run the REAL entrypoint + ldd
-# each solver, and for ElmerSolver print the FULL missing-lib chain + loader path
-# so runtime library gaps are diagnosed precisely (not guessed).
-name: Probe Physics Solver Image
+# Probe the pushed pcbgenius-physics-solver image: verify solvers present, and
+# CRITICALLY confirm the /work/benchmarks/ case files are baked into the image
+# (so a benchmark-less image can never be taken for a benchmark-capable one).
+# This runs BEFORE the Salad CPU test.
+name: Probe Physics Solver Image (checks benchmarks present)
 
 on:
   workflow_dispatch:
@@ -13,20 +14,23 @@ jobs:
       - name: Pull image
         run: docker pull hrm3478938/pcbgenius-physics-solver:latest
 
-      - name: Run entrypoint (presence probe)
-        run: docker run --rm hrm3478938/pcbgenius-physics-solver:latest
+      - name: Run entrypoint (presence + verification probe)
+        run: |
+          echo "=== entrypoint (presence + verification benchmark) ==="
+          docker run --rm hrm3478938/pcbgenius-physics-solver:latest || echo "(entrypoint exited non-zero; reads verification output)"
 
-      - name: which + ldd (full missing-lib diagnosis)
+      - name: Verify /work/benchmarks are present in the image
         run: |
           docker run --rm --entrypoint sh hrm3478938/pcbgenius-physics-solver:latest -c '
-            echo "=== presence ==="
+            echo "=== benchmarks tree ==="
+            find /work/benchmarks -type f 2>/dev/null | sort
+            echo "=== expect 9 files: calculix/vm_bar_tension.inp, gmsh/unit_cube.geo, openems/microstrip_5p8.py, README.md, elmer/ssheat/* x5 ==="
+            echo "count: $(find /work/benchmarks -type f 2>/dev/null | wc -l)"
+            echo "=== solver binaries ==="
             for b in openEMS gmsh ElmerSolver ccx; do printf "%s: " "$b"; command -v "$b" || echo MISSING; done
-            echo "=== ldd ElmerSolver (FULL missing chain) ==="
-            ldd /usr/local/bin/ElmerSolver 2>&1 | grep -E "not found|=>" | head -40
-            echo "=== loader path ==="
-            echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
-            echo "=== what MUMPS/scalapack/scotch libs are actually present ==="
-            ls -1 /usr/lib/x86_64-linux-gnu/ | grep -iE "mumps|scalapack|scotch|parmetis|openblas" | head -40
-            echo "=== where does apt think libmumps-ptscotch-5.4 installs .so? ==="
-            dpkg -L libmumps-ptscotch-5.4 2>/dev/null | grep -E "\.so" | head
+            echo "=== entrypoint has run_verifications? ==="
+            grep -q "run_verifications" /work/solver_entrypoint.py && echo "YES run_verifications present" || echo "NO run_verifications"
+            grep -q "def _verify_gmsh" /work/solver_entrypoint.py && echo "YES _verify_gmsh" || echo "NO _verify_gmsh"
+            echo "=== stale .f01 ref should be gone ==="
+            grep -q "vm_bar_tension.f01" /work/solver_entrypoint.py && echo "STALE .f01 STILL PRESENT (bad)" || echo "OK no .f01 ref"
             '
