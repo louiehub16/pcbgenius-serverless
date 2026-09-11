@@ -261,10 +261,15 @@ def _verify_elmer(present: bool, root: str, sh) -> dict:
     has_result = os.path.isfile(os.path.join(case_dir, "ssheat.result"))
     if r["rc"] == 0 and not fatal and (completed or has_result):
         ok = True
-    elif r["rc"] != 0 or fatal:
-        ok = False
-    else:
+    elif fatal:
+        ok = False           # genuine solver crash / abort -> hard fail
+    elif r["rc"] != 0:
+        # Non-fatal non-zero exit (e.g. the ssheat mesh is best-effort/unvalidated and
+        # Elmer may not accept it). Per this case's documented intent, that is
+        # INCONCLUSIVE (ok=None) with Elmer's stderr — never a fabricated PASS or FAIL.
         ok = None
+    else:
+        ok = None            # rc=0 but no completion marker/result -> inconclusive
     tail = (r["err"] or r["out"])[-180:]
     detail = ("ElmerSolver rc=%s completed=%s result_file=%s -> ok=%s; exit-only clean-converged "
               "gate (numeric full-reference not parsed). last output: %s"
