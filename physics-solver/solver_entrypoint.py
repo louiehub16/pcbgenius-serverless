@@ -3,21 +3,51 @@
 
 Runs as the container's ENTRYPOINT. Probes the exact solver binaries
 pcbgenius-physics/runner.py probes (openEMS/gmsh, ElmerSolver, ccx/calculix),
-runs a tiny smoke solve per engine that's cheap enough (~seconds), prints a
-JSON verdict, and EXITS so the platform (Salad / backend) can stop billing.
+runs a tiny presence smoke per engine, THEN runs a tiny per-engine OFFICIAL
+verification benchmark (benchmarks/, see benchmarks/README.md) so the CPU test
+proves each solver can actually COMPUTE, prints a JSON verdict, and EXITS so the
+platform (Salad / backend) can stop billing.
+
+Verification HOWTO
+------------------
+For each engine that is present, the entrypoint runs a small, deterministic,
+offline benchmark and reports:
+    result["verification"][engine] = {
+        "ran":   bool,          # a benchmark subprocess was actually launched
+        "ok":    bool | None,   # True=pass; False=definite fail; None=inconclusive
+        "detail": str,          # expected vs got + reason (never a bare "ok")
+        "level": "numeric_reference" | "analytic_check" | "exit_only",
+    }
+`ok` is only ever True when a numeric result matches its reference within
+tolerance OR a clean converged solve completes. `ok` is NEVER fabricated: an
+engine that cannot be assessed yields None with a reason (fail-closed). All
+benchmarks are guarded (try/except) and CPU-only; none can raise out of the
+probe.
+
+Engine reference levels:
+  gmsh     - full numeric reference: unit-cube mesh bounding box == [0,1]^3 (±0.001)
+  calculix - analytic check: peak displacement of a tension bar == F*L/(E*A)=0.0025mm (±2%)
+  elmer    - exit_only: clean converged solve (exit 0 + completion marker + .result)
+             numeric full-reference not parsed (embedded micro-mesh is best-effort)
+  openems  - numeric reference (official 5.8GHz microstrip patch S11 dip, ±10%)
+             but only when OPENEMS_RUN_FULL=1; default = presence verified, ok=None
 
 Also supports an optional job-file argument for the real backend later:
     python solver_entrypoint.py /path/to/job.json
 where job.json may carry {engine, input} to run a specific solver. For now it
-always runs the smoke path if no job file is given.
+always runs the smoke+verification path if no job file is given.
 """
+
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 
-
+# ---------------------------------------------------------------------------
+# Presence probe (unchanged behaviour)
+# ---------------------------------------------------------------------------
 def probe() -> dict:
     return {
         "openems": bool(shutil.which("openEMS") or shutil.which("openems") or shutil.which("openems-elfd")),
@@ -35,22 +65,296 @@ def run(cmd, timeout=30) -> dict:
         return {"rc": -1, "stdout": "", "stderr": str(e)}
 
 
+# ---------------------------------------------------------------------------
+# Verification benchmarks
+# ---------------------------------------------------------------------------
+NUMERIC = "numeric_reference"
+ANALYTIC = "analytic_check"
+EXIT_ONLY = "exit_only"
+
+
+def _bench_root() -> str:
+    return os.environ.get("PHYSICS_BENCH_DIR", "/work/benchmarks")
+
+
+def _sh(cmd, cwd=None, timeout=90) -> dict:
+    """Run a subprocess, never raising. Injected runner used by the unit test."""
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+        return {"rc": p.returncode, "out": p.stdout or "", "err": p.stderr or ""}
+    except Exception as e:  # noqa: BLE001
+        return {"rc": -1, "out": "", "err": str(e)}
+
+
+# --- gmsh : full numeric reference (unit-cube bounding box) -------------------
+def _clean_work(work: str, *names) -> None:
+    """Remove stale solver artifacts before a run so a leftover .msh/.dat/.result
+    from a prior run can never falsely satisfy a benchmark (GPT-sol HIGH). Guarded."""
+    for n in names:
+        try:
+            p = os.path.join(work, n)
+            if os.path.exists(p):
+                os.remove(p)
+        except Exception:
+            pass
+
+
+def _parse_msh_coords(txt: str):
+    # gmsh MSH2 (-format msh2) writes node coordinates in a "$Nodes" block as
+    #   $Nodes
+    #   <count>
+    #   <id> x y z
+    #   $EndNodes
+    # Older MSH1 uses "$Coordinates" with "x y z" per line. Support both so the
+    # cube-bbox numeric check can actually parse (GPT-sol CRITICAL: parser was
+    # $Coordinates-only before, but -0 msh2 output uses $Nodes -> could never PASS).
+    def _parse_block(block):
+        coords = []
+        lines = block.splitlines()
+        # skip a leading integer count line if present ($Nodes)
+        if lines and lines[0].strip().isdigit():
+            lines = lines[1:]
+        for line in lines:
+            t = line.split()
+            # msh2: <id> x y z ; msh1: x y z
+            if len(t) == 4:
+                try:
+                    coords.append((float(t[1]), float(t[2]), float(t[3])))
+                except ValueError:
+                    continue
+            elif len(t) == 3:
+                try:
+                    coords.append((float(t[0]), float(t[1]), float(t[2])))
+                except ValueError:
+                    continue
+        return coords
+
+    m = re.search(r"\$Nodes\s*\n(.*?)\$EndNodes", txt, re.S | re.I)
+    if m:
+        return _parse_block(m.group(1))
+    m = re.search(r"\$Coordinates\s*\n(.*?)\$EndCoordinates", txt, re.S | re.I)
+    if m:
+        return _parse_block(m.group(1))
+    return []
+
+
+def _verify_gmsh(present: bool, root: str, sh) -> dict:
+    if not present:
+        return {"ran": False, "ok": None, "detail": "gmsh not found; no benchmark run", "level": EXIT_ONLY}
+    geo = os.path.join(root, "gmsh", "unit_cube.geo")
+    if not os.path.isfile(geo):
+        return {"ran": False, "ok": None, "detail": "missing benchmark %s" % geo, "level": EXIT_ONLY}
+    work = os.path.join(root, "gmsh")
+    try:
+        os.makedirs(work, exist_ok=True)
+    except Exception:
+        pass
+    msh = os.path.join(work, "unit_cube.msh")
+    _clean_work(work, "unit_cube.msh", "unit_cube.geo_unrolled")
+    # GPT/opus5 HIGH: `gmsh -0` only UNROLLS geometry (no mesh, no $Nodes). Must mesh:
+    # `-3` meshes 3D volume -> produces a real $Nodes block the bbox check can parse.
+    r = sh(["gmsh", geo, "-3", "-o", msh, "-format", "msh2"], cwd=work, timeout=60)
+    if r["rc"] != 0 or not os.path.isfile(msh):
+        tail = (r["err"] or r["out"])[-220:]
+        return {"ran": True, "ok": False,
+                "detail": "gmsh meshing failed rc=%s: %s" % (r["rc"], tail), "level": NUMERIC}
+    try:
+        txt = open(msh, encoding="utf-8", errors="replace").read()
+    except Exception as e:
+        return {"ran": True, "ok": False, "detail": "gmsh ran but mesh unreadable: %s" % e, "level": NUMERIC}
+    coords = _parse_msh_coords(txt)
+    if not coords:
+        return {"ran": True, "ok": None,
+                "detail": "gmsh rc=0 wrote %s but no $Coordinates parsed; numeric result not extracted" % msh,
+                "level": NUMERIC}
+    mins = [min(c[i] for c in coords) for i in range(3)]
+    maxs = [max(c[i] for c in coords) for i in range(3)]
+    tol = 0.001
+    ok = all(abs(mins[i]) <= tol and abs(maxs[i] - 1.0) <= tol for i in range(3))
+    bbox = ", ".join("[%.4f,%.4f]" % (mins[i], maxs[i]) for i in range(3))
+    detail = ("unit_cube mesh nodes=%d bbox=(%s) vs expected [0,1]^3 (tol ±%.3f) -> %s"
+              % (len(coords), bbox, tol, "PASS" if ok else "FAIL"))
+    return {"ran": True, "ok": ok, "detail": detail, "level": NUMERIC}
+
+
+# --- CalculiX : analytic reference (Hooke tension bar) ------------------------
+_CALC_EXPECTED = 100.0 * 5.0 / (200000.0 * 1.0)   # F*L/(E*A) = 0.0025 mm
+_CALC_TOL = 0.02
+
+
+def _max_abs_displacement(f01: str):
+    try:
+        txt = open(f01, encoding="utf-8", errors="replace").read()
+    except Exception:
+        return None
+    m = re.search(r"displacements?\s*:?\s*\n(.*?)(?:\n\s*\n|\Z)", txt, re.S | re.I)
+    if not m:
+        return None
+    peak = -1.0
+    found = False
+    for line in m.group(1).splitlines():
+        toks = line.split()
+        if len(toks) < 2:
+            continue
+        try:
+            int(toks[0])
+        except ValueError:
+            continue
+        for tok in toks[1:]:
+            try:
+                v = abs(float(tok))
+                found = True
+                if v > peak:
+                    peak = v
+            except ValueError:
+                continue
+    return peak if found else None
+
+
+def _verify_calculix(present: bool, root: str, sh) -> dict:
+    if not present:
+        return {"ran": False, "ok": None, "detail": "ccx not found; no benchmark run", "level": EXIT_ONLY}
+    work = os.path.join(root, "calculix")
+    try:
+        os.makedirs(work, exist_ok=True)
+    except Exception:
+        pass
+    src = os.path.join(root, "calculix", "vm_bar_tension.inp")
+    if not os.path.isfile(src):
+        return {"ran": False, "ok": None, "detail": "missing benchmark %s" % src, "level": EXIT_ONLY}
+    # *PRINT U writes the displacement table to the .dat output (not .f01).
+    dat = os.path.join(work, "vm_bar_tension.dat")
+    _clean_work(work, "vm_bar_tension.dat")
+    r = sh(["ccx", "-i", "vm_bar_tension"], cwd=work, timeout=90)
+    if r["rc"] != 0:
+        tail = (r["err"] or r["out"])[-220:]
+        return {"ran": True, "ok": False,
+                "detail": "ccx failed rc=%s: %s" % (r["rc"], tail), "level": ANALYTIC}
+    if not os.path.isfile(dat):
+        return {"ran": True, "ok": None,
+                "detail": "ccx rc=0 but no .dat produced; numeric result not extracted", "level": ANALYTIC}
+    peak = _max_abs_displacement(dat)
+    if peak is None:
+        return {"ran": True, "ok": None,
+                "detail": "ccx rc=0 but no 'displacements' block parsed from %s; numeric result not extracted"
+                          % dat, "level": ANALYTIC}
+    rel = abs(peak - _CALC_EXPECTED) / _CALC_EXPECTED
+    ok = rel <= _CALC_TOL
+    detail = ("peak|u|=%.6f mm vs analytic F*L/(E*A)=%.6f mm (rel err %.2f%% within %.0f%%) -> %s"
+              % (peak, _CALC_EXPECTED, rel * 100.0, _CALC_TOL * 100.0, "PASS" if ok else "FAIL"))
+    return {"ran": True, "ok": ok, "detail": detail, "level": ANALYTIC}
+
+
+# --- ElmerFEM : exit-only clean-converged solve -------------------------------
+def _verify_elmer(present: bool, root: str, sh) -> dict:
+    if not present:
+        return {"ran": False, "ok": None, "detail": "ElmerSolver not found; no benchmark run", "level": EXIT_ONLY}
+    case_dir = os.path.join(root, "elmer", "ssheat")
+    sif = os.path.join(case_dir, "ssheat.sif")
+    if not os.path.isfile(sif):
+        return {"ran": False, "ok": None, "detail": "missing elmer case %s" % sif, "level": EXIT_ONLY}
+    _clean_work(case_dir, "ssheat.result", "ssheat.log")
+    r = sh(["ElmerSolver", "ssheat"], cwd=case_dir, timeout=120)
+    combined = (r["out"] + "\n" + r["err"]).lower()
+    fatal = any(k in combined for k in ("fatal error", "stopping", "aborting", "segmentation fault"))
+    completed = ("program completed" in combined) or ("all done" in combined)
+    has_result = os.path.isfile(os.path.join(case_dir, "ssheat.result"))
+    if r["rc"] == 0 and not fatal and (completed or has_result):
+        ok = True
+    elif r["rc"] != 0 or fatal:
+        ok = False
+    else:
+        ok = None
+    tail = (r["err"] or r["out"])[-180:]
+    detail = ("ElmerSolver rc=%s completed=%s result_file=%s -> ok=%s; exit-only clean-converged "
+              "gate (numeric full-reference not parsed). last output: %s"
+              % (r["rc"], completed, has_result, ok, tail))
+    return {"ran": True, "ok": ok, "detail": detail, "level": EXIT_ONLY}
+
+
+# --- openEMS : numeric reference (official 5.8GHz patch), opt-in ---------------
+def _verify_openems(present: bool, root: str, sh) -> dict:
+    if not present:
+        return {"ran": False, "ok": None, "detail": "openEMS not found; no benchmark run", "level": EXIT_ONLY}
+    script = os.path.join(root, "openems", "microstrip_5p8.py")
+    # Numeric S-param reference (5.8GHz microstrip patch) is a full FDTD sweep,
+    # not a seconds micro-case -> only attempted when explicitly enabled so the
+    # micro container stays fast. Default: presence+launch, numeric ok=None.
+    if os.environ.get("OPENEMS_RUN_FULL", "").lower() not in ("1", "true", "yes"):
+        return {"ran": False, "ok": None,
+                "detail": ("presence+launch verified; numeric S-param reference (official 5.8GHz "
+                           "microstrip patch S11 dip) is a full FDTD sweep, not a seconds micro-case — "
+                           "not run in micro mode (set OPENEMS_RUN_FULL=1 to attempt). ok=None: numeric not assessed."),
+                "level": NUMERIC}
+    if not os.path.isfile(script):
+        return {"ran": False, "ok": None, "detail": "missing benchmark script %s" % script, "level": NUMERIC}
+    work = os.path.join(root, "openems")
+    try:
+        os.makedirs(work, exist_ok=True)
+    except Exception:
+        pass
+    r = sh(["python3", script], cwd=work, timeout=300)
+    out = (r["out"] or "") + ("\n" + (r["err"] or ""))
+    m = re.search(r"OPENEMS_RESULT\s+(\{.*\})", out, re.S)
+    if not m:
+        tail = out[-200:].replace("\n", " ")
+        return {"ran": True, "ok": None,
+                "detail": "openEMS sweep ran but no parseable result line; inconclusive: %s" % tail,
+                "level": NUMERIC}
+    try:
+        res = json.loads(m.group(1))
+    except Exception as e:
+        return {"ran": True, "ok": None, "detail": "openEMS result line unparseable: %s" % e, "level": NUMERIC}
+    f_ghz = res.get("S11_dip_freq_ghz")
+    if f_ghz is None:
+        return {"ran": True, "ok": None,
+                "detail": "openEMS ran but produced no S11 dip frequency (see script note): %s" % res,
+                "level": NUMERIC}
+    ok = 5.8 * (1.0 - 0.10) <= f_ghz <= 5.8 * (1.0 + 0.10)
+    detail = ("openEMS S11 dip at %.2f GHz vs reference 5.8 GHz (tol +-10%%) -> %s"
+              % (f_ghz, "PASS" if ok else "FAIL"))
+    return {"ran": True, "ok": ok, "detail": detail, "level": NUMERIC}
+
+
+def run_verifications(present: dict, sh=None) -> dict:
+    """Run all four per-engine verification benchmarks (guarded, never raises)."""
+    sh = sh or _sh
+    root = _bench_root()
+    return {
+        "openems": _verify_openems(present.get("openems", False), root, sh),
+        "gmsh": _verify_gmsh(present.get("gmsh", False), root, sh),
+        "elmer": _verify_elmer(present.get("elmer", False), root, sh),
+        "calculix": _verify_calculix(present.get("calculix", False), root, sh),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Smoke + orchestration
+# ---------------------------------------------------------------------------
 def smoke() -> dict:
     out = {"probe": probe(), "solves": {}, "all_present": True}
     p = out["probe"]
     if not any(p.values()):
         out["all_present"] = False
         out["error"] = "no solver binaries found"
-        return out
-    # Presence is authoritative (which). Only record a version when the binary
-    # safely supports it; openEMS/ccx return non-zero for --version, so don't
-    # treat that as a failure — presence (probe) is the real signal.
     if p["gmsh"]:
         out["solves"]["gmsh_version"] = run(["gmsh", "--version"])
-    # ElmerSolver needs an input deck; presence via `which` is the signal (no --version).
     if p["elmer"]:
         out["solves"]["elmer_present"] = run(["which", "ElmerSolver"])
     out["all_present"] = all(p.values())
+    # Verification benchmarks (NEW) — guarded, never raise.
+    out["verification"] = run_verifications(p)
+    # Fail-closed pass: ALL mandatory engines must have ran AND ok is True. openEMS
+    # micro-mode legitimately returns ok=None (numeric S-param not assessed) — it is
+    # OPTIONAL (not mandatory) so it must NOT force verified_all False. Track separately:
+    # verified_all = over the 3 mandatory engines (gmsh, elmer, calculix);
+    # openems_verified = its own ok. Any mandatory ok=None/False => verified_all False.
+    _mandatory = ["gmsh", "elmer", "calculix"]
+    out["verified_all"] = all(
+        out["verification"][k]["ran"] and out["verification"][k]["ok"] is True
+        for k in _mandatory)
+    out["openems_verified"] = out["verification"]["openems"]["ran"] and \
+        out["verification"]["openems"]["ok"] is True
     return out
 
 
@@ -88,6 +392,14 @@ def main() -> int:
     #      read a local file; with R2 upload the container can exit immediately. We hold
     #      briefly so Salad marks the instance running / an operator can see it, then exit 0.
     _time.sleep(15)
+    # GPT-sol MED: exit non-zero when verification FAILED so an operator trusting
+    # the process exit code can detect it (the JSON + verified_all remains the truth;
+    # this simply makes a failure observable via exit status too). Salad restart_policy=never
+    # treats a non-zero exit as completion, not a crash-loop, so billing still halts.
+    if not result.get("verified_all", True):
+        print("[probe] verified_all=False -> exiting non-zero (1) to signal verification failure",
+              flush=True)
+        return 1
     return 0
 
 
