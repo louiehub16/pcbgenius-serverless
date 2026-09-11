@@ -67,14 +67,14 @@ PCBGenius CalculiX verification: axial tension bar (clean deck)
  4,1,0
  4,2,0
  4,3,0
+*STEP
+*STATIC
 *CLOAD
 ** Total 100 N axial pull on the free end face (25 N per node, direction 1 = +x).
 21,1,25.0
 22,1,25.0
 23,1,25.0
 24,1,25.0
-*STEP
-*STATIC
 *NODE PRINT, NSET=EALL, FREQUENCY=1
 U
 *END STEP
