@@ -63,7 +63,7 @@ def run_job(job: dict) -> dict:
 
 def main() -> int:
     # Optional R2 env are passed but unused by smoke (real job uploads later)
-    _ = os.environ.get("R2_ENDPOINT_URL")
+    import time as _time
     if len(sys.argv) > 1:
         try:
             job = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -74,20 +74,51 @@ def main() -> int:
     result = run_job(job)
     out = json.dumps(result, indent=2)
     print(out, flush=True)
-    # Salad Gold Rule #3: a process that exits is treated as a crash and the
-    # instance is auto-restarted in a loop. For a one-shot probe, persist the
-    # result to a file AND keep the process alive so Salad marks the instance
-    # "running" (catches the output), then it exits cleanly.
+
+    # ---- Auto-upload result to R2 (if creds provided) + write local copy ----
     try:
         with open("/work/probe_result.json", "w", encoding="utf-8") as f:
             f.write(out)
     except Exception:
         pass
-    # Keep alive long enough for Salad to register the instance as running and
-    # an operator to read /work/probe_result.json; then exit 0 cleanly.
-    import time
-    time.sleep(60)
+    _try_upload_r2(result, out)
+
+    # ---- Auto-shutdown flow: after upload, EXIT (Salad restart_policy=never stops the
+    #      instance, halting billing). Keep-alive only matters if we need an operator to
+    #      read a local file; with R2 upload the container can exit immediately. We hold
+    #      briefly so Salad marks the instance running / an operator can see it, then exit 0.
+    _time.sleep(15)
     return 0
+
+
+def _try_upload_r2(result: dict, out: str) -> None:
+    """Best-effort upload of the probe result to Cloudflare R2 (S3-compatible).
+
+    Uses boto3 if available; otherwise falls back to urllib SigV4-free presigned-style
+    is NOT supported, so we require boto3 (installed in the image). Missing creds ->
+    silent no-op (never raise).
+    """
+    endpoint = os.environ.get("R2_ENDPOINT_URL") or os.environ.get("R2_ENDPOINT")
+    bucket = os.environ.get("BUCKET_NAME") or os.environ.get("R2_BUCKET")
+    ak = os.environ.get("AWS_ACCESS_KEY_ID") or os.environ.get("R2_ACCESS_KEY")
+    sk = os.environ.get("AWS_SECRET_ACCESS_KEY") or os.environ.get("R2_SECRET")
+    if not (endpoint and bucket and ak and sk):
+        print("[probe] R2 creds not all present — skipping upload (local copy kept)", flush=True)
+        return
+    try:
+        import boto3
+        from botocore.client import Config
+        key = "physics/probe_result.json"
+        s3 = boto3.client(
+            "s3", endpoint_url=endpoint,
+            aws_access_key_id=ak, aws_secret_access_key=sk,
+            config=Config(signature_version="s3v4"),
+            region_name="auto",
+        )
+        s3.put_object(Bucket=bucket, Key=key, Body=out.encode(), ContentType="application/json")
+        print(f"[probe] uploaded result -> s3://{bucket}/{key}", flush=True)
+    except Exception as e:
+        print(f"[probe] R2 upload failed (non-fatal): {str(e)[:120]}", flush=True)
 
 
 if __name__ == "__main__":
