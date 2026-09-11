@@ -82,8 +82,11 @@ WORKDIR /work
 
 # Thin runtime entrypoint: probes the exact binaries pcbgenius-physics/runner.py
 # expects (openEMS/gmsh, ElmerSolver, ccx/calculix), runs a tiny smoke solve per
-# engine, prints a JSON verdict, then EXITS so the platform can stop billing.
+# engine PLUS a tiny per-engine OFFICIAL verification benchmark (see
+# benchmarks/README.md for references/tolerances), prints a JSON verdict, then
+# EXITS so the platform can stop billing.
 COPY solver_entrypoint.py /work/solver_entrypoint.py
+COPY benchmarks/ /work/benchmarks/
 RUN chmod +x /work/solver_entrypoint.py
 
 ENTRYPOINT ["python3", "/work/solver_entrypoint.py"]
