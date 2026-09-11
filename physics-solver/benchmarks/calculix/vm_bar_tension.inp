@@ -82,6 +82,11 @@ PCBGenius CalculiX verification: axial tension bar (clean deck)
 22,1,25.0
 23,1,25.0
 24,1,25.0
+** *NODE PRINT, U writes the nodal displacement table to the .dat (ccx unit 5)
+** as a single header line " displacements (vx,vy,vz) for set EALL and time
+** 1.0000000E+00" then one row per node " node   U1   U2   U3 " (Fortran e13.6,
+** e.g. 2.500000E-03). solver_entrypoint._max_abs_displacement scans these
+** tables (line containing 'displacement') and peaks max|U| across U1,U2,U3.
 *NODE PRINT, NSET=EALL, FREQUENCY=1
 U
 *END STEP
