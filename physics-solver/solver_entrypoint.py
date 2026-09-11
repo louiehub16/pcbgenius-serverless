@@ -187,27 +187,54 @@ def _max_abs_displacement(f01: str):
         txt = open(f01, encoding="utf-8", errors="replace").read()
     except Exception:
         return None
-    m = re.search(r"displacements?\s*:?\s*\n(.*?)(?:\n\s*\n|\Z)", txt, re.S | re.I)
-    if not m:
-        return None
+    # CalculiX *NODE PRINT, NSET=EALL, FREQUENCY=1 with variable U writes a
+    # section to the .dat (unit 5) headed by a SINGLE line like:
+    #     displacements (vx,vy,vz) for set EALL and time 1.0000000E+00
+    # followed by a blank line and then one row per node:
+    #         node         U1           U2           U3
+    # where each value is Fortran E-notation (e.g. 2.500000E-03, 0.000000E+00).
+    # The table ends at the first blank line after data rows (or a non-node
+    # line). We scan every such section and return the max |U| across the
+    # U1,U2,U3 columns. (Note: the header keeps '... for set ... and time ...'
+    # on the SAME line as 'displacements', so we match the substring, not
+    # '<word>\n'.)
     peak = -1.0
     found = False
-    for line in m.group(1).splitlines():
+    in_table = False
+    seen_data = False
+    for line in txt.splitlines():
+        low = line.strip().lower()
+        if not in_table:
+            if "displacement" in low:
+                in_table = True
+                seen_data = False
+            continue
         toks = line.split()
-        if len(toks) < 2:
+        if not toks:
+            # a blank line ends a displacement table once rows have been seen;
+            # a blank immediately after any header line is skipped harmlessly.
+            if seen_data:
+                in_table = False
             continue
         try:
             int(toks[0])
         except ValueError:
+            # A non-numeric first token is a COLUMN-HEADER row (e.g. "node  U1  U2  U3"
+            # or "node  vx  vy  vz") that immediately precedes the data rows. Skip it —
+            # do NOT end the table here, or the peak is never read (this was a bug).
+            # Only end the table on a blank line AFTER numeric rows have been seen.
+            if seen_data:
+                in_table = False
             continue
+        seen_data = True
         for tok in toks[1:]:
             try:
                 v = abs(float(tok))
-                found = True
-                if v > peak:
-                    peak = v
             except ValueError:
                 continue
+            found = True
+            if v > peak:
+                peak = v
     return peak if found else None
 
 
