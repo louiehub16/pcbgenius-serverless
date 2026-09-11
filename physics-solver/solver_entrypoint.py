@@ -45,6 +45,9 @@ import shutil
 import subprocess
 import sys
 
+import threading
+import time
+
 # ---------------------------------------------------------------------------
 # Presence probe (unchanged behaviour)
 # ---------------------------------------------------------------------------
@@ -380,21 +383,30 @@ def _verify_openems(present: bool, root: str, sh) -> dict:
 
 
 def run_verifications(present: dict, sh=None) -> dict:
-    """Run all four per-engine verification benchmarks (guarded, never raises)."""
+    """Run all four per-engine verification benchmarks (guarded, never raises).
+
+    Each engine emits a flushed progress line so an external log stream (see
+    _R2Stream) can report progress near-real-time between the (blocking) solver
+    runs.
+    """
     sh = sh or _sh
     root = _bench_root()
-    return {
-        "openems": _verify_openems(present.get("openems", False), root, sh),
-        "gmsh": _verify_gmsh(present.get("gmsh", False), root, sh),
-        "elmer": _verify_elmer(present.get("elmer", False), root, sh),
-        "calculix": _verify_calculix(present.get("calculix", False), root, sh),
-    }
+    engines = (("openems", _verify_openems), ("gmsh", _verify_gmsh),
+               ("elmer", _verify_elmer), ("calculix", _verify_calculix))
+    out: dict = {}
+    for name, fn in engines:
+        out[name] = fn(present.get(name, False), root, sh)
+        d = out[name]
+        print("[verify] %s: ran=%s ok=%s level=%s"
+              % (name, d.get("ran"), d.get("ok"), d.get("level", "?")), flush=True)
+    return out
 
 
 # ---------------------------------------------------------------------------
 # Smoke + orchestration
 # ---------------------------------------------------------------------------
 def smoke() -> dict:
+    print("[smoke] probing solver binaries...", flush=True)
     out = {"probe": probe(), "solves": {}, "all_present": True}
     p = out["probe"]
     if not any(p.values()):
@@ -438,6 +450,13 @@ def main() -> int:
             job = {}
     else:
         job = {"engine": "smoke"}
+
+    # ---- Stream container output to R2 (Salad hides stdout; this mirrors it) ----
+    _orig_out, _orig_err = sys.stdout, sys.stderr
+    stream = _R2Stream.start()
+    if stream is not None:
+        sys.stdout, sys.stderr = stream, stream
+
     result = run_job(job)
     out = json.dumps(result, indent=2)
     print(out, flush=True)
@@ -467,49 +486,139 @@ def main() -> int:
     # treats any completion as a stop (non-crash-loop), so billing still halts.
     hard_fail = any(v.get("ok") is False
                     for v in (result.get("verification") or {}).values())
+    _rc = 1 if hard_fail else 0
     if hard_fail:
         print("[probe] an engine HARD-FAILED -> exiting non-zero (1) to signal verification failure",
               flush=True)
-        return 1
-    return 0
+
+    # ---- Final flush of the streamed log, then restore real stdout/stderr ----
+    if stream is not None:
+        print(f"[probe] streamed run log -> R2 {stream.key}", flush=True)
+        try:
+            stream.stop()
+        finally:
+            sys.stdout, sys.stderr = _orig_out, _orig_err
+    return _rc
 
 
-def _try_upload_r2(result: dict, out: str) -> None:
-    """Best-effort upload of the probe result to Cloudflare R2 (S3-compatible).
-
-    Uses boto3 if available; otherwise falls back to urllib SigV4-free presigned-style
-    is NOT supported, so we require boto3 (installed in the image). Missing creds ->
-    silent no-op (never raise).
-    """
+def _r2_cfg():
+    """Resolve R2 env config (endpoint/bucket/ak/sk). None when any is missing."""
     endpoint = os.environ.get("R2_ENDPOINT_URL") or os.environ.get("R2_ENDPOINT")
     bucket = os.environ.get("BUCKET_NAME") or os.environ.get("R2_BUCKET")
     ak = os.environ.get("AWS_ACCESS_KEY_ID") or os.environ.get("R2_ACCESS_KEY")
     sk = os.environ.get("AWS_SECRET_ACCESS_KEY") or os.environ.get("R2_SECRET") or os.environ.get("R2_SECRET_KEY")
     if not (endpoint and bucket and ak and sk):
-        print(f"[probe] R2 creds not all present (endpoint={bool(endpoint)} bucket={bool(bucket)} "
-              f"ak={bool(ak)} sk={bool(sk)}) — skipping upload (local copy kept)", flush=True)
-        return
+        return None
+    return {"endpoint": endpoint, "bucket": bucket, "ak": ak, "sk": sk}
+
+
+def _r2_client(cfg: dict):
+    """Lazy boto3 S3 client for the R2 endpoint (best-effort, never raises)."""
+    import boto3
+    from botocore.client import Config
+    return boto3.client(
+        "s3", endpoint_url=cfg["endpoint"], aws_access_key_id=cfg["ak"],
+        aws_secret_access_key=cfg["sk"],
+        config=Config(signature_version="s3v4", connect_timeout=10, read_timeout=15,
+                      retries={"max_attempts": 1}), region_name="auto")
+
+
+class _R2Stream:
+    """Tee the container's stdout/stderr to a Cloudflare R2 object.
+
+    Salad's public API exposes only lifecycle events (no container stdout), so this
+    mirrors every write into an R2 key, flushing the whole (small) buffer from a
+    background thread every few seconds to make a run observable near-real-time.
+    Best-effort: missing creds / egress blocked -> silent no-op; it never raises and
+    never blocks a run. The key is per-process/timestamped so concurrent instances
+    do not clobber each other.
+    """
+    def __init__(self, s3, bucket, key, interval=5.0):
+        self.s3 = s3
+        self.bucket = bucket
+        self.key = key
+        self._interval = interval
+        self._text = ""            # cumulative buffer (whole log each push -> idempotent)
+        self._last = ""            # last pushed snapshot
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._orig_stdout = sys.stdout
+        self._t = threading.Thread(target=self._pump, daemon=True, name="r2-log-stream")
+        self._t.start()
+
+    @classmethod
+    def start(cls):
+        """Build a stream from env config; None when R2 creds are absent/unusable."""
+        try:
+            cfg = _r2_cfg()
+            if cfg is None:
+                return None
+            s3 = _r2_client(cfg)
+            key = ("physics/container_logs/%s_pid%d.log"
+                   % (time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()), os.getpid()))
+            return cls(s3, cfg["bucket"], key)
+        except Exception:
+            return None
+
+    def write(self, s: str) -> int:      # File-like hook for tee-ing stdout/stderr
+        if s:
+            with self._lock:
+                self._text += s
+            try:                          # still emit to the real stdout too
+                self._orig_stdout.write(s)
+                self._orig_stdout.flush()
+            except Exception:
+                pass
+        return len(s)
+
+    def flush(self) -> None:              # stdout.flush() contract: pump owns pushing
+        pass
+
+    def _pump(self):
+        while not self._stop.wait(self._interval):
+            self._push()
+
+    def _push(self):
+        with self._lock:
+            if self._text == self._last:
+                return
+            text = self._text
+            self._last = text
+        try:
+            self.s3.put_object(Bucket=self.bucket, Key=self.key,
+                               Body=text.encode(), ContentType="text/plain")
+        except Exception:
+            pass                           # fail-soft: logging never breaks the run
+
+    def stop(self):
+        self._stop.set()
+        self._t.join(timeout=self._interval + 1.0)
+        self._push()                       # final flush of the remainder
+
+
+def _try_upload_r2(result: dict, out: str) -> None:
+    """Best-effort upload of the probe result to Cloudflare R2 (S3-compatible).
+
+    Requires boto3 (installed in the image). Missing creds -> silent no-op (never
+    raise). put_object is run in a worker thread and aborted at 25s so a bad
+    endpoint can never hang the container.
+    """
     try:
-        import boto3
-        from botocore.client import Config
-        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FT
+        cfg = _r2_cfg()
+        if cfg is None:
+            print("[probe] R2 creds not all present — skipping result upload "
+                  "(local copy kept)", flush=True)
+            return
+        from concurrent.futures import ThreadPoolExecutor
+        s3 = _r2_client(cfg)
         key = "physics/probe_result.json"
-        s3 = boto3.client(
-            "s3", endpoint_url=endpoint,
-            aws_access_key_id=ak, aws_secret_access_key=sk,
-            config=Config(signature_version="s3v4", connect_timeout=10, read_timeout=15,
-                          retries={"max_attempts": 1}),
-            region_name="auto",
-        )
-        # Hard per-request cap: put_object alone can stall past connect/read timeouts
-        # on a pathological endpoint. Run it in a worker thread and abort at 25s so the
-        # container can never hang (Gemini HIGH fix).
+
         def _put():
-            s3.put_object(Bucket=bucket, Key=key, Body=out.encode(), ContentType="application/json")
+            s3.put_object(Bucket=cfg["bucket"], Key=key, Body=out.encode(),
+                          ContentType="application/json")
         with ThreadPoolExecutor(max_workers=1) as ex:
-            f = ex.submit(_put)
-            f.result(timeout=25)
-        print(f"[probe] uploaded result -> s3://{bucket}/{key}", flush=True)
+            ex.submit(_put).result(timeout=25)
+        print(f"[probe] uploaded result -> s3://{cfg['bucket']}/{key}", flush=True)
     except Exception as e:
         print(f"[probe] R2 upload failed (non-fatal): {str(e)[:120]}", flush=True)
 
