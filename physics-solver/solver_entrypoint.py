@@ -222,7 +222,9 @@ def _verify_calculix(present: bool, root: str, sh) -> dict:
     src = os.path.join(root, "calculix", "vm_bar_tension.inp")
     if not os.path.isfile(src):
         return {"ran": False, "ok": None, "detail": "missing benchmark %s" % src, "level": EXIT_ONLY}
-    # *PRINT U writes the displacement table to the .dat output (not .f01).
+    # *NODE PRINT, U writes the nodal displacement table to the .dat output
+    # (NOT .f01; and NOT '*PRINT U' which is an invalid CalculiX keyword -> fatal
+    # calinput card error caught by the built-image probe).
     dat = os.path.join(work, "vm_bar_tension.dat")
     _clean_work(work, "vm_bar_tension.dat")
     r = sh(["ccx", "-i", "vm_bar_tension"], cwd=work, timeout=90)
