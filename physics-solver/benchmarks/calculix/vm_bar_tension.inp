@@ -79,5 +79,6 @@ PCBGenius CalculiX verification: axial tension bar
 *
 *STEP
 *STATIC
-*NODE PRINT, NSET=EALL, U
+*NODE PRINT, NSET=EALL
+U
 *END STEP
