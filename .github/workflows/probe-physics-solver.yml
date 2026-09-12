@@ -14,10 +14,17 @@ jobs:
       - name: Pull image
         run: docker pull hrm3478938/pcbgenius-physics-solver:latest
 
-      - name: Run entrypoint (presence + verification probe)
+      - name: Run entrypoint (full verification + push results to R2)
         run: |
           echo "=== entrypoint (presence + verification benchmark) ==="
-          docker run --rm hrm3478938/pcbgenius-physics-solver:latest || echo "(entrypoint exited non-zero; reads verification output)"
+          docker run --rm \
+            -e R2_ENDPOINT_URL="${{ secrets.R2_ENDPOINT_URL }}" \
+            -e BUCKET_NAME="${{ secrets.R2_BUCKET }}" \
+            -e AWS_ACCESS_KEY_ID="${{ secrets.R2_ACCESS_KEY }}" \
+            -e AWS_SECRET_ACCESS_KEY="${{ secrets.R2_SECRET_KEY }}" \
+            -e OPENEMS_RUN_FULL=1 \
+            hrm3478938/pcbgenius-physics-solver:latest \
+            || echo "(entrypoint exited non-zero; reads verification output)"
 
       - name: Verify /work/benchmarks are present in the image
         run: |
